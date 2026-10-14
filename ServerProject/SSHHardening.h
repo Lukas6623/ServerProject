@@ -19,6 +19,10 @@ private:
 
     bool hardeningEnabled;
 
+    // Result of the (cached) root/sudo check.
+    bool privilegesChecked;
+    bool privilegesOk;
+
     bool executeRemote(
         const std::string& command,
         std::string& output,
@@ -34,6 +38,13 @@ private:
         const std::string& command
     );
 
+    bool ensureTool(
+        const std::string& tool,
+        const std::string& package
+    );
+
+    void removeTempFiles();
+
     bool checkScript();
 
     bool setPermissions();
@@ -48,7 +59,7 @@ private:
 
     bool checkSSHService();
 
-    bool isSSHConfigValid();
+    bool isSSHConfigValid(bool verbose = true);
 
     bool update();
 

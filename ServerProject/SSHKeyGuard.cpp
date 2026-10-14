@@ -14,7 +14,13 @@ static const std::string SSHKEY_STATE_FILE = "/opt/serverguard/data/ssh_key_stat
 static const std::string SSHKEY_BACKUP_DIR = "/opt/serverguard/backups/ssh-key-guard";
 static const std::string SSHKEY_BACKUP_SCRIPT = "/opt/serverguard/backups/ssh-key-guard/ssh_key_guard.py";
 static const std::string SSHKEY_TEMP_SCRIPT = "/opt/serverguard/ssh_key_guard.py.update";
-static const std::string SSHKEY_UPDATE_URL = "https://raw.githubusercontent.com/Lukas6623/ServerGuard/main/ssh_key_guard.py";
+static const std::string SSHKEY_MODULE_BASE_URL = "https://raw.githubusercontent.com/Lukas6623/ServerGuard/main/ssh_key_guard/";
+static const std::string SSHKEY_UPDATE_URL = SSHKEY_MODULE_BASE_URL + "ssh_key_guard.py";
+static const std::string SSHKEY_MANIFEST_URL = SSHKEY_MODULE_BASE_URL + "manifest.json";
+static const std::string SSHKEY_SIGNATURE_URL = SSHKEY_MODULE_BASE_URL + "manifest.sig";
+static const std::string SSHKEY_TEMP_MANIFEST = "/opt/serverguard/ssh_key_guard.manifest.json.update";
+static const std::string SSHKEY_TEMP_SIGNATURE = "/opt/serverguard/ssh_key_guard.manifest.sig.update";
+static const std::string SSHKEY_PUBLIC_KEY_PATH = "/opt/serverguard/ssh_key_guard.public.pem";
 static const std::string SSHKEY_AUDIT_RULE = "/etc/audit/rules.d/serverguard-ssh-key.rules";
 
 static const std::string SSHKEY_SERVICE_CONTENT = R"([Unit]
@@ -698,19 +704,146 @@ void SSHKeyGuard::installGuard()
         return;
     }
 
-    if (!downloadScript(SSHKEY_UPDATE_URL, SSHKEY_TEMP_SCRIPT))
-    {
-        std::cout << "Failed to download SSH Key Guard." << std::endl;
 
+    auto verifySignedPackage = [this]() -> bool
+        {
+            const std::string publicKey =
+                "-----BEGIN PUBLIC KEY-----\n"
+                "MCowBQYDK2VwAyEA1ywC77aXQ2fnnag3dmCl0Zgq8toVOlamOet4lwCKphQ=\n"
+                "-----END PUBLIC KEY-----\n";
+
+            std::string verifyOutput;
+            int verifyExitCode = -1;
+
+            std::cout << "Downloading signed SSH Key Guard package..." << std::endl;
+
+            if (!downloadScript(SSHKEY_MANIFEST_URL, SSHKEY_TEMP_MANIFEST))
+            {
+                std::cout << "Failed to download signed manifest." << std::endl;
+                return false;
+            }
+
+            if (!downloadScript(SSHKEY_SIGNATURE_URL, SSHKEY_TEMP_SIGNATURE))
+            {
+                std::cout << "Failed to download manifest signature." << std::endl;
+                return false;
+            }
+
+            if (!downloadScript(SSHKEY_UPDATE_URL, SSHKEY_TEMP_SCRIPT))
+            {
+                std::cout << "Failed to download SSH Key Guard script." << std::endl;
+                return false;
+            }
+
+            const std::string encodedPublicKey = base64Encode(publicKey);
+            const std::string writePublicKeyCommand =
+                "printf '%s' " + shellQuote(encodedPublicKey) +
+                " | base64 -d > " + shellQuote(SSHKEY_PUBLIC_KEY_PATH) +
+                " && chmod 600 " + shellQuote(SSHKEY_PUBLIC_KEY_PATH);
+
+            if (!executeRemote(writePublicKeyCommand, verifyOutput, verifyExitCode))
+            {
+                std::cout << "Failed to prepare pinned public key." << std::endl;
+                printCommandOutput(verifyOutput);
+                return false;
+            }
+
+            std::cout << "Verifying Ed25519 signature..." << std::endl;
+
+            verifyOutput.clear();
+            verifyExitCode = -1;
+
+            const std::string signatureCommand =
+                "command -v openssl >/dev/null 2>&1"
+                " && openssl pkeyutl -verify -pubin -inkey " +
+                shellQuote(SSHKEY_PUBLIC_KEY_PATH) +
+                " -sigfile " + shellQuote(SSHKEY_TEMP_SIGNATURE) +
+                " -rawin -in " + shellQuote(SSHKEY_TEMP_MANIFEST);
+
+            if (!executeRemote(signatureCommand, verifyOutput, verifyExitCode))
+            {
+                std::cout << "SIGNATURE VERIFICATION FAILED. Package rejected." << std::endl;
+                printCommandOutput(verifyOutput);
+                return false;
+            }
+
+            std::cout << "Checking manifest and SHA-256..." << std::endl;
+
+            const std::string pythonVerifier =
+                "import hashlib,json,re,sys;"
+                "manifest_path,script_path=sys.argv[1],sys.argv[2];"
+                "m=json.load(open(manifest_path,'r',encoding='utf-8'));"
+                "assert m.get('format')=='ServerGuardModuleManifest','bad manifest format';"
+                "assert m.get('version')==1,'unsupported manifest version';"
+                "assert m.get('algorithm')=='Ed25519','unexpected signature algorithm';"
+                "files=m.get('files');"
+                "assert isinstance(files,list) and files,'manifest has no files';"
+                "entry=next((x for x in files if x.get('path')=='ssh_key_guard.py'),None);"
+                "assert entry is not None,'ssh_key_guard.py is absent from manifest';"
+                "expected=entry.get('sha256','');"
+                "assert re.fullmatch(r'[0-9a-fA-F]{64}',expected),'invalid SHA-256 in manifest';"
+                "actual=hashlib.sha256(open(script_path,'rb').read()).hexdigest();"
+                "assert actual.lower()==expected.lower(),'SHA-256 mismatch';"
+                "print('Ed25519 signature and SHA-256 verified successfully')";
+
+            const std::string hashCommand =
+                "python3 -c " + shellQuote(pythonVerifier) + " " +
+                shellQuote(SSHKEY_TEMP_MANIFEST) + " " +
+                shellQuote(SSHKEY_TEMP_SCRIPT);
+
+            verifyOutput.clear();
+            verifyExitCode = -1;
+
+            if (!executeRemote(hashCommand, verifyOutput, verifyExitCode))
+            {
+                std::cout << "MANIFEST / SHA-256 VERIFICATION FAILED. Package rejected." << std::endl;
+                printCommandOutput(verifyOutput);
+                return false;
+            }
+
+            printCommandOutput(verifyOutput);
+            return true;
+        };
+
+    if (!verifySignedPackage())
+    {
+        std::string cleanupOutput;
+        int cleanupExitCode = -1;
+        executeRemote(
+            "rm -f " + shellQuote(SSHKEY_TEMP_SCRIPT) + " " +
+            shellQuote(SSHKEY_TEMP_MANIFEST) + " " +
+            shellQuote(SSHKEY_TEMP_SIGNATURE) + " " +
+            shellQuote(SSHKEY_PUBLIC_KEY_PATH),
+            cleanupOutput,
+            cleanupExitCode);
+
+        std::cout << "Installation stopped because package authenticity could not be verified." << std::endl;
         return;
     }
 
     if (!validatePythonScript(SSHKEY_TEMP_SCRIPT))
     {
-        executeRemote("rm -f " + shellQuote(SSHKEY_TEMP_SCRIPT), output, exitCode);
+        executeRemote(
+            "rm -f " + shellQuote(SSHKEY_TEMP_SCRIPT) + " " +
+            shellQuote(SSHKEY_TEMP_MANIFEST) + " " +
+            shellQuote(SSHKEY_TEMP_SIGNATURE) + " " +
+            shellQuote(SSHKEY_PUBLIC_KEY_PATH),
+            output,
+            exitCode);
 
         return;
     }
+
+    output.clear();
+
+    exitCode = -1;
+
+    executeRemote(
+        "rm -f " + shellQuote(SSHKEY_TEMP_MANIFEST) + " " +
+        shellQuote(SSHKEY_TEMP_SIGNATURE) + " " +
+        shellQuote(SSHKEY_PUBLIC_KEY_PATH),
+        output,
+        exitCode);
 
     if (scriptExists())
     {
@@ -1302,21 +1435,148 @@ void SSHKeyGuard::updateGuard()
 
     int exitCode = -1;
 
-    if (!downloadScript(SSHKEY_UPDATE_URL, SSHKEY_TEMP_SCRIPT))
-    {
-        std::cout << "Failed to download update." << std::endl;
 
+    auto verifySignedPackage = [this]() -> bool
+        {
+            const std::string publicKey =
+                "-----BEGIN PUBLIC KEY-----\n"
+                "MCowBQYDK2VwAyEA1ywC77aXQ2fnnag3dmCl0Zgq8toVOlamOet4lwCKphQ=\n"
+                "-----END PUBLIC KEY-----\n";
+
+            std::string verifyOutput;
+            int verifyExitCode = -1;
+
+            std::cout << "Downloading signed SSH Key Guard package..." << std::endl;
+
+            if (!downloadScript(SSHKEY_MANIFEST_URL, SSHKEY_TEMP_MANIFEST))
+            {
+                std::cout << "Failed to download signed manifest." << std::endl;
+                return false;
+            }
+
+            if (!downloadScript(SSHKEY_SIGNATURE_URL, SSHKEY_TEMP_SIGNATURE))
+            {
+                std::cout << "Failed to download manifest signature." << std::endl;
+                return false;
+            }
+
+            if (!downloadScript(SSHKEY_UPDATE_URL, SSHKEY_TEMP_SCRIPT))
+            {
+                std::cout << "Failed to download SSH Key Guard script." << std::endl;
+                return false;
+            }
+
+            const std::string encodedPublicKey = base64Encode(publicKey);
+            const std::string writePublicKeyCommand =
+                "printf '%s' " + shellQuote(encodedPublicKey) +
+                " | base64 -d > " + shellQuote(SSHKEY_PUBLIC_KEY_PATH) +
+                " && chmod 600 " + shellQuote(SSHKEY_PUBLIC_KEY_PATH);
+
+            if (!executeRemote(writePublicKeyCommand, verifyOutput, verifyExitCode))
+            {
+                std::cout << "Failed to prepare pinned public key." << std::endl;
+                printCommandOutput(verifyOutput);
+                return false;
+            }
+
+            std::cout << "Verifying Ed25519 signature..." << std::endl;
+
+            verifyOutput.clear();
+            verifyExitCode = -1;
+
+            const std::string signatureCommand =
+                "command -v openssl >/dev/null 2>&1"
+                " && openssl pkeyutl -verify -pubin -inkey " +
+                shellQuote(SSHKEY_PUBLIC_KEY_PATH) +
+                " -sigfile " + shellQuote(SSHKEY_TEMP_SIGNATURE) +
+                " -rawin -in " + shellQuote(SSHKEY_TEMP_MANIFEST);
+
+            if (!executeRemote(signatureCommand, verifyOutput, verifyExitCode))
+            {
+                std::cout << "SIGNATURE VERIFICATION FAILED. Package rejected." << std::endl;
+                printCommandOutput(verifyOutput);
+                return false;
+            }
+
+            std::cout << "Checking manifest and SHA-256..." << std::endl;
+
+            const std::string pythonVerifier =
+                "import hashlib,json,re,sys;"
+                "manifest_path,script_path=sys.argv[1],sys.argv[2];"
+                "m=json.load(open(manifest_path,'r',encoding='utf-8'));"
+                "assert m.get('format')=='ServerGuardModuleManifest','bad manifest format';"
+                "assert m.get('version')==1,'unsupported manifest version';"
+                "assert m.get('algorithm')=='Ed25519','unexpected signature algorithm';"
+                "files=m.get('files');"
+                "assert isinstance(files,list) and files,'manifest has no files';"
+                "entry=next((x for x in files if x.get('path')=='ssh_key_guard.py'),None);"
+                "assert entry is not None,'ssh_key_guard.py is absent from manifest';"
+                "expected=entry.get('sha256','');"
+                "assert re.fullmatch(r'[0-9a-fA-F]{64}',expected),'invalid SHA-256 in manifest';"
+                "actual=hashlib.sha256(open(script_path,'rb').read()).hexdigest();"
+                "assert actual.lower()==expected.lower(),'SHA-256 mismatch';"
+                "print('Ed25519 signature and SHA-256 verified successfully')";
+
+            const std::string hashCommand =
+                "python3 -c " + shellQuote(pythonVerifier) + " " +
+                shellQuote(SSHKEY_TEMP_MANIFEST) + " " +
+                shellQuote(SSHKEY_TEMP_SCRIPT);
+
+            verifyOutput.clear();
+            verifyExitCode = -1;
+
+            if (!executeRemote(hashCommand, verifyOutput, verifyExitCode))
+            {
+                std::cout << "MANIFEST / SHA-256 VERIFICATION FAILED. Package rejected." << std::endl;
+                printCommandOutput(verifyOutput);
+                return false;
+            }
+
+            printCommandOutput(verifyOutput);
+            return true;
+        };
+
+    if (!verifySignedPackage())
+    {
+        std::string cleanupOutput;
+        int cleanupExitCode = -1;
+        executeRemote(
+            "rm -f " + shellQuote(SSHKEY_TEMP_SCRIPT) + " " +
+            shellQuote(SSHKEY_TEMP_MANIFEST) + " " +
+            shellQuote(SSHKEY_TEMP_SIGNATURE) + " " +
+            shellQuote(SSHKEY_PUBLIC_KEY_PATH),
+            cleanupOutput,
+            cleanupExitCode);
+
+        std::cout << "Update cancelled because package authenticity could not be verified." << std::endl;
         return;
     }
 
     if (!validatePythonScript(SSHKEY_TEMP_SCRIPT))
     {
-        executeRemote("rm -f " + shellQuote(SSHKEY_TEMP_SCRIPT), output, exitCode);
+        executeRemote(
+            "rm -f " + shellQuote(SSHKEY_TEMP_SCRIPT) + " " +
+            shellQuote(SSHKEY_TEMP_MANIFEST) + " " +
+            shellQuote(SSHKEY_TEMP_SIGNATURE) + " " +
+            shellQuote(SSHKEY_PUBLIC_KEY_PATH),
+            output,
+            exitCode);
 
         std::cout << "Update cancelled." << std::endl;
 
         return;
     }
+
+    output.clear();
+
+    exitCode = -1;
+
+    executeRemote(
+        "rm -f " + shellQuote(SSHKEY_TEMP_MANIFEST) + " " +
+        shellQuote(SSHKEY_TEMP_SIGNATURE) + " " +
+        shellQuote(SSHKEY_PUBLIC_KEY_PATH),
+        output,
+        exitCode);
 
     if (!backupCurrentScript())
     {
@@ -1800,4 +2060,4 @@ bool SSHKeyGuard::webUpdate()
     updateGuard();
 
     return scriptExists() && (!serviceExists() || isServiceActive());
-}
+}                     

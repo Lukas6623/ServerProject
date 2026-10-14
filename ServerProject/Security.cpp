@@ -6,12 +6,27 @@
 #include <cctype>
 #include <chrono>
 #include <ctime>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <memory>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <winsock2.h>
+#include <windows.h>
+#include <wininet.h>
+#include <urlmon.h>
+
+#include <openssl/evp.h>
+
 #include "config.h"
+
+#pragma comment(lib, "urlmon.lib")
+#pragma comment(lib, "wininet.lib")
 
 static const std::string SECURITY_DIR = "/opt/serverguard";
 static const std::string SECURITY_DATA_DIR = "/opt/serverguard/data";
@@ -19,15 +34,38 @@ static const std::string SECURITY_SCRIPT = "/opt/serverguard/brute_force_guard.p
 static const std::string SECURITY_TEMP_SCRIPT = "/opt/serverguard/brute_force_guard.py.update";
 static const std::string SECURITY_SERVICE = "serverguard-security.service";
 static const std::string SECURITY_SERVICE_PATH = "/etc/systemd/system/serverguard-security.service";
-static const std::string SECURITY_UPDATE_URL = ServerGuardConfig::SECURITY_UPDATE_URL;
 static const std::string SECURITY_BACKUP_DIR = "/opt/serverguard/backups/security";
 static const std::string SECURITY_BACKUP_SCRIPT = "/opt/serverguard/backups/security/brute_force_guard.py";
 static const std::string SECURITY_STATS_FILE = "/opt/serverguard/data/stats.json";
 
-
-static const std::string SECURITY_SCRIPT_SHA256 = "";
+// URLs come straight from config.h (no URL derivation via rfind('/')).
+static const std::string SECURITY_UPDATE_URL = ServerGuardConfig::SECURITY_SCRIPT_URL;
+static const std::string SECURITY_MANIFEST_URL = ServerGuardConfig::SECURITY_MANIFEST_URL;
+static const std::string SECURITY_SIGNATURE_URL = ServerGuardConfig::SECURITY_SIGNATURE_URL;
 
 static const int SECURITY_BACKUP_KEEP = 5;
+
+// ---- Signed module verification (done on Windows, like FirewallManager) ----
+
+static const size_t SECURITY_MAX_MANIFEST_SIZE = 64 * 1024;
+static const size_t SECURITY_MAX_SIGNATURE_SIZE = 64;
+static const size_t SECURITY_MAX_SCRIPT_SIZE = 4 * 1024 * 1024;
+
+// Name of the script inside manifest.json ("path" field).
+static const char* SECURITY_MANIFEST_ENTRY = ServerGuardConfig::SECURITY_MAIN_SCRIPT_NAME;
+
+// Temporary base64 file on the server (uploaded in chunks).
+static const std::string SECURITY_TEMP_BASE64 = "/tmp/.sg_security.b64";
+
+// 32 bytes of the Ed25519 public key of brute_force_guard.
+// d36e3610bb16c33bca3f0c345874d033726ed83400024800cff08d31172c1769
+// The private key must never be stored in the application.
+static const unsigned char SECURITY_PUBLIC_KEY[32] = {
+    0xd3, 0x6e, 0x36, 0x10, 0xbb, 0x16, 0xc3, 0x3b,
+    0xca, 0x3f, 0x0c, 0x34, 0x58, 0x74, 0xd0, 0x33,
+    0x72, 0x6e, 0xd8, 0x34, 0x00, 0x02, 0x48, 0x00,
+    0xcf, 0xf0, 0x8d, 0x31, 0x17, 0x2c, 0x17, 0x69
+};
 
 
 
@@ -244,6 +282,251 @@ static std::string securityJsonEscape(const std::string& value)
     }
 
     return result;
+}
+
+
+
+// ---- Download / signature helpers ----
+
+static bool downloadToFile(const std::string& url, const std::string& path)
+{
+    // Drop any cached copy so we never mix a stale manifest with a new script.
+    DeleteUrlCacheEntryA(url.c_str());
+
+    return URLDownloadToFileA(
+        nullptr,
+        url.c_str(),
+        path.c_str(),
+        0,
+        nullptr) == S_OK;
+}
+
+static bool readBinaryFile(const std::string& path, std::string& data, size_t maxSize)
+{
+    data.clear();
+
+    std::ifstream file(path, std::ios::binary);
+
+    if (!file)
+    {
+        return false;
+    }
+
+    file.seekg(0, std::ios::end);
+
+    const std::streamoff size = file.tellg();
+
+    if (size < 0 || static_cast<unsigned long long>(size) > maxSize)
+    {
+        return false;
+    }
+
+    file.seekg(0, std::ios::beg);
+
+    data.resize(static_cast<size_t>(size));
+
+    if (!data.empty())
+    {
+        file.read(&data[0], static_cast<std::streamsize>(data.size()));
+
+        if (!file || file.gcount() != static_cast<std::streamsize>(data.size()))
+        {
+            data.clear();
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool verifyEd25519(const std::string& manifest, const std::string& signature)
+{
+    if (signature.size() != SECURITY_MAX_SIGNATURE_SIZE || manifest.empty())
+    {
+        return false;
+    }
+
+    EVP_PKEY* rawKey = EVP_PKEY_new_raw_public_key(
+        EVP_PKEY_ED25519,
+        nullptr,
+        SECURITY_PUBLIC_KEY,
+        sizeof(SECURITY_PUBLIC_KEY));
+
+    if (!rawKey)
+    {
+        std::cerr << "OpenSSL could not create the Ed25519 public key.\n";
+        return false;
+    }
+
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> key(rawKey, EVP_PKEY_free);
+
+    EVP_MD_CTX* rawContext = EVP_MD_CTX_new();
+
+    if (!rawContext)
+    {
+        return false;
+    }
+
+    std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)> context(rawContext, EVP_MD_CTX_free);
+
+    if (EVP_DigestVerifyInit(context.get(), nullptr, nullptr, nullptr, key.get()) != 1)
+    {
+        return false;
+    }
+
+    return EVP_DigestVerify(
+        context.get(),
+        reinterpret_cast<const unsigned char*>(signature.data()),
+        signature.size(),
+        reinterpret_cast<const unsigned char*>(manifest.data()),
+        manifest.size()) == 1;
+}
+
+// Checks manifest fields and extracts the SHA-256 of brute_force_guard.py.
+static bool getExpectedScriptHash(const std::string& manifest, std::string& expectedHash)
+{
+    expectedHash.clear();
+
+    if (manifest.find("\"format\"") == std::string::npos ||
+        manifest.find("\"ServerGuardModuleManifest\"") == std::string::npos ||
+        !std::regex_search(
+            manifest,
+            std::regex(R"REGEX("version"\s*:\s*1(?:\s*[,}]))REGEX")) ||
+        manifest.find("\"algorithm\"") == std::string::npos ||
+        manifest.find("\"Ed25519\"") == std::string::npos)
+    {
+        return false;
+    }
+
+    const std::string entry = SECURITY_MANIFEST_ENTRY;
+
+    // "brute_force_guard.py" has a dot; escape it for the regex.
+    std::string escaped;
+
+    for (char c : entry)
+    {
+        if (c == '.')
+        {
+            escaped += "\\.";
+        }
+        else
+        {
+            escaped += c;
+        }
+    }
+
+    const std::regex pathPattern("\"path\"\\s*:\\s*\"" + escaped + "\"");
+
+    const std::regex entryPattern(
+        "\"path\"\\s*:\\s*\"" + escaped +
+        "\"\\s*,\\s*\"sha256\"\\s*:\\s*\"([0-9a-fA-F]{64})\"");
+
+    size_t count = 0;
+
+    for (std::sregex_iterator it(manifest.begin(), manifest.end(), pathPattern), end;
+        it != end;
+        ++it)
+    {
+        ++count;
+    }
+
+    if (count != 1)
+    {
+        return false;
+    }
+
+    std::smatch match;
+
+    if (!std::regex_search(manifest, match, entryPattern))
+    {
+        return false;
+    }
+
+    expectedHash = toLower(match[1].str());
+
+    return true;
+}
+
+static std::string sha256Hex(const std::string& data)
+{
+    unsigned char digest[EVP_MAX_MD_SIZE] = {};
+    unsigned int digestLength = 0;
+
+    if (EVP_Digest(
+        data.data(),
+        data.size(),
+        digest,
+        &digestLength,
+        EVP_sha256(),
+        nullptr) != 1)
+    {
+        return {};
+    }
+
+    if (digestLength != 32)
+    {
+        return {};
+    }
+
+    std::ostringstream result;
+    result << std::hex << std::setfill('0');
+
+    for (unsigned int i = 0; i < digestLength; ++i)
+    {
+        result << std::setw(2) << static_cast<unsigned int>(digest[i]);
+    }
+
+    return result.str();
+}
+
+static std::string base64Encode(const std::string& input)
+{
+    static const char* alphabet =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "abcdefghijklmnopqrstuvwxyz"
+        "0123456789+/";
+
+    std::string output;
+    output.reserve(((input.size() + 2) / 3) * 4);
+
+    size_t i = 0;
+
+    while (i + 2 < input.size())
+    {
+        const unsigned int value =
+            (static_cast<unsigned char>(input[i]) << 16) |
+            (static_cast<unsigned char>(input[i + 1]) << 8) |
+            static_cast<unsigned char>(input[i + 2]);
+
+        output += alphabet[(value >> 18) & 63];
+        output += alphabet[(value >> 12) & 63];
+        output += alphabet[(value >> 6) & 63];
+        output += alphabet[value & 63];
+
+        i += 3;
+    }
+
+    if (i + 1 == input.size())
+    {
+        const unsigned int value = static_cast<unsigned char>(input[i]) << 16;
+
+        output += alphabet[(value >> 18) & 63];
+        output += alphabet[(value >> 12) & 63];
+        output += "==";
+    }
+    else if (i + 2 == input.size())
+    {
+        const unsigned int value =
+            (static_cast<unsigned char>(input[i]) << 16) |
+            (static_cast<unsigned char>(input[i + 1]) << 8);
+
+        output += alphabet[(value >> 18) & 63];
+        output += alphabet[(value >> 12) & 63];
+        output += alphabet[(value >> 6) & 63];
+        output += '=';
+    }
+
+    return output;
 }
 
 
@@ -1670,20 +1953,6 @@ bool Security::verifyScriptFile(const std::string& path, bool runSelfTest)
         return false;
     }
 
-    if (!SECURITY_SCRIPT_SHA256.empty())
-    {
-        output.clear();
-
-        if (!executeRemote(
-            "echo " + shellQuote(SECURITY_SCRIPT_SHA256 + "  " + path) + " | sha256sum -c --status",
-            output, exitCode, true))
-        {
-            std::cout << "[ERROR] SHA256 mismatch. The script was NOT installed.\n";
-            setError("Security script SHA256 mismatch.");
-            return false;
-        }
-    }
-
     output.clear();
 
     const std::string syntaxCommand =
@@ -1739,69 +2008,212 @@ bool Security::verifyScriptFile(const std::string& path, bool runSelfTest)
     return true;
 }
 
+// Downloads brute_force_guard.py + manifest.json + manifest.sig on Windows,
+// verifies Ed25519 signature and SHA-256 locally (OpenSSL), then uploads the
+// verified script to SECURITY_TEMP_SCRIPT on the server.
+// The server never downloads anything and never runs unverified code.
+// Downloads brute_force_guard.py + manifest.json + manifest.sig on Windows,
+// verifies Ed25519 signature and SHA-256 locally (OpenSSL), then uploads the
+// verified script to SECURITY_TEMP_SCRIPT on the server.
+// The server never downloads anything and never runs unverified code.
 bool Security::downloadScriptToTemp()
 {
-    const std::string temp = shellQuote(SECURITY_TEMP_SCRIPT);
-    const std::string url = shellQuote(SECURITY_UPDATE_URL);
+    char tempDirectory[MAX_PATH] = {};
+    char manifestPath[MAX_PATH] = {};
+    char signaturePath[MAX_PATH] = {};
+    char scriptPath[MAX_PATH] = {};
 
-    const std::string command =
-        "rm -f " + temp + "; "
-        "if command -v curl >/dev/null 2>&1; then "
-        "curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 "
-        "--retry 2 --retry-delay 2 -A ServerGuard -o " + temp + " " + url + "; "
-        "elif command -v wget >/dev/null 2>&1; then "
-        "wget -q --timeout=30 --tries=3 -U ServerGuard -O " + temp + " " + url + "; "
-        "else echo 'neither curl nor wget is installed'; exit 127; fi";
-
-    std::string output;
-    int exitCode = -1;
-    bool downloaded = false;
-
-    for (int attempt = 1; attempt <= 3 && !downloaded; ++attempt)
-    {
-        std::cout << "Downloading brute_force_guard.py (attempt " << attempt << "/3)...\n";
-
-        output.clear();
-
-        if (executeRemote(command, output, exitCode, true, 180))
+    const auto cleanup = [&]()
         {
-            downloaded = true;
-            break;
-        }
+            if (manifestPath[0]) DeleteFileA(manifestPath);
+            if (signaturePath[0]) DeleteFileA(signaturePath);
+            if (scriptPath[0]) DeleteFileA(scriptPath);
+        };
 
-        printOutput(output);
-
-        if (attempt < 3)
-        {
-            sleepMs(3000 * attempt);
-        }
-    }
-
-    if (!downloaded)
+    if (!GetTempPathA(MAX_PATH, tempDirectory))
     {
-        std::cout << "[ERROR] Failed to download the security script.\n";
-        setError("Failed to download the security script: " + trim(output));
+        setError("Cannot determine Windows temp directory.");
+        std::cout << "[ERROR] " << lastError << "\n";
         return false;
     }
 
-    std::cout << "[OK] Security script downloaded.\n";
-	std::cout << url << "\n";
-    if (SECURITY_SCRIPT_SHA256.empty())
+    if (!GetTempFileNameA(tempDirectory, "sgm", 0, manifestPath) ||
+        !GetTempFileNameA(tempDirectory, "sgs", 0, signaturePath) ||
+        !GetTempFileNameA(tempDirectory, "sgp", 0, scriptPath))
     {
-        std::cout << "[WARN] No SHA256 pin configured: the script is trusted based on HTTPS only.\n";
+        setError("Cannot create temporary files.");
+        std::cout << "[ERROR] " << lastError << "\n";
+        cleanup();
+        return false;
     }
 
+    std::cout << "Downloading signed module files...\n";
+
+    // Download each file separately so the error says exactly which URL failed.
+    struct DownloadItem
+    {
+        const char* label;
+        const std::string* url;
+        const char* path;
+    };
+
+    const DownloadItem items[] = {
+        { "manifest.json", &SECURITY_MANIFEST_URL,  manifestPath },
+        { "manifest.sig",  &SECURITY_SIGNATURE_URL, signaturePath },
+        { "script",        &SECURITY_UPDATE_URL,    scriptPath },
+    };
+
+    for (const DownloadItem& item : items)
+    {
+        if (!downloadToFile(*item.url, item.path))
+        {
+            setError(std::string("Download failed (") + item.label + "): " + *item.url);
+
+            std::cout << "[ERROR] Download failed (" << item.label << "):\n"
+                << "        " << *item.url << "\n"
+                << "        Check that the file exists at this URL (open it in a browser).\n"
+                << "        Installation cancelled.\n";
+
+            cleanup();
+            return false;
+        }
+    }
+
+    std::string manifest;
+    std::string signature;
+    std::string script;
+
+    if (!readBinaryFile(manifestPath, manifest, SECURITY_MAX_MANIFEST_SIZE) ||
+        !readBinaryFile(signaturePath, signature, SECURITY_MAX_SIGNATURE_SIZE) ||
+        !readBinaryFile(scriptPath, script, SECURITY_MAX_SCRIPT_SIZE))
+    {
+        setError("Cannot read downloaded files or a size limit was exceeded "
+            "(manifest.sig must be exactly 64 raw bytes).");
+        std::cout << "[ERROR] " << lastError << "\n";
+        cleanup();
+        return false;
+    }
+
+    // Local copies are in memory now.
+    cleanup();
+
+    std::cout << "Checking Ed25519 signature...\n";
+
+    if (!verifyEd25519(manifest, signature))
+    {
+        setError("Invalid module signature.");
+        std::cout << "[ERROR] SECURITY ERROR: Invalid module signature. Installation cancelled.\n";
+        return false;
+    }
+
+    std::cout << "Signature valid. Checking manifest structure...\n";
+
+    std::string expectedHash;
+
+    if (!getExpectedScriptHash(manifest, expectedHash))
+    {
+        setError("Invalid manifest structure or missing script hash.");
+        std::cout << "[ERROR] SECURITY ERROR: Invalid manifest structure or missing script hash. "
+            "Installation cancelled.\n";
+        return false;
+    }
+
+    const std::string actualHash = sha256Hex(script);
+
+    if (actualHash.empty() || actualHash != expectedHash)
+    {
+        setError("SHA-256 mismatch.");
+        std::cout << "[ERROR] SECURITY ERROR: SHA-256 mismatch. "
+            "Downloaded module may have been modified. Installation cancelled.\n";
+        return false;
+    }
+
+    std::cout << "[OK] Ed25519 and SHA-256 verified successfully.\n";
+    std::cout << "Uploading verified script to the server...\n";
+
+    std::string output;
+    int exitCode = -1;
+
+    if (!commandExists("base64"))
+    {
+        setError("base64 command is missing on the server.");
+        std::cout << "[ERROR] " << lastError << "\n";
+        return false;
+    }
+
+    // Upload as base64 chunks into /tmp (no sudo needed), then decode with sudo.
+    const std::string encoded = base64Encode(script);
+    const size_t chunkSize = 6000;
+
+    if (!executeRemote(
+        "umask 077; : > " + shellQuote(SECURITY_TEMP_BASE64),
+        output, exitCode, false, 30))
+    {
+        setError("Cannot create temporary upload file on the server.");
+        std::cout << "[ERROR] " << lastError << "\n";
+        return false;
+    }
+
+    for (size_t pos = 0; pos < encoded.size(); pos += chunkSize)
+    {
+        const std::string chunk = encoded.substr(pos, chunkSize);
+
+        if (!executeRemote(
+            "printf %s " + shellQuote(chunk) + " >> " + shellQuote(SECURITY_TEMP_BASE64),
+            output, exitCode, false, 60))
+        {
+            executeRemote("rm -f " + shellQuote(SECURITY_TEMP_BASE64), output, exitCode, false, 30);
+            setError("Upload to the server failed.");
+            std::cout << "[ERROR] " << lastError << "\n";
+            return false;
+        }
+    }
+
+    const bool decoded = executeRemote(
+        "mkdir -p " + shellQuote(SECURITY_DIR) +
+        " && base64 -d " + shellQuote(SECURITY_TEMP_BASE64) +
+        " > " + shellQuote(SECURITY_TEMP_SCRIPT) +
+        " && chown root:root " + shellQuote(SECURITY_TEMP_SCRIPT) +
+        " && chmod 600 " + shellQuote(SECURITY_TEMP_SCRIPT),
+        output, exitCode, true, 60);
+
+    std::string cleanupOutput;
+    int cleanupCode = -1;
+    executeRemote("rm -f " + shellQuote(SECURITY_TEMP_BASE64), cleanupOutput, cleanupCode, false, 30);
+
+    if (!decoded)
+    {
+        printOutput(output);
+        setError("Could not decode the uploaded script on the server.");
+        std::cout << "[ERROR] " << lastError << "\n";
+        return false;
+    }
+
+    // Make sure the uploaded copy is byte-identical to what we verified.
+    output.clear();
+
+    if (!executeRemote(
+        "sha256sum " + shellQuote(SECURITY_TEMP_SCRIPT) + " | cut -d' ' -f1",
+        output, exitCode, true, 30) ||
+        toLower(trim(output)) != expectedHash)
+    {
+        executeRemote("rm -f " + shellQuote(SECURITY_TEMP_SCRIPT), cleanupOutput, cleanupCode, true, 30);
+        setError("Uploaded script hash does not match the verified hash.");
+        std::cout << "[ERROR] " << lastError << "\n";
+        return false;
+    }
+
+    std::cout << "[OK] Verified script uploaded.\n";
+
+    // Only now run syntax check and self-test (the script is already trusted).
     if (!verifyScriptFile(SECURITY_TEMP_SCRIPT, true))
     {
-        std::string cleanup;
-        int cleanupCode = -1;
-        executeRemote("rm -f " + temp, cleanup, cleanupCode, true);
+        executeRemote("rm -f " + shellQuote(SECURITY_TEMP_SCRIPT), cleanupOutput, cleanupCode, true, 30);
         return false;
     }
 
     return true;
 }
-
 bool Security::backupCurrentSecurityScript()
 {
     std::string output;
@@ -1809,7 +2221,7 @@ bool Security::backupCurrentSecurityScript()
 
     if (!executeRemote("test -s " + shellQuote(SECURITY_SCRIPT), output, exitCode, true))
     {
-        return true; 
+        return true;
     }
 
     const std::string command =
@@ -1987,21 +2399,14 @@ bool Security::installSecurity()
         return false;
     }
 
-    if (!commandExists("curl") && !commandExists("wget"))
+    if (!ensureCommand("base64", "coreutils", "coreutils"))
     {
-        if (!ensureCommand("curl", "curl", "curl"))
-        {
-            return false;
-        }
-    }
-    else
-    {
-        std::cout << "[OK] curl/wget is available.\n";
+        return false;
     }
 
     if (!commandExists("ss"))
     {
-        ensureCommand("ss", "iproute2", "iproute"); 
+        ensureCommand("ss", "iproute2", "iproute");
     }
 
     if (!commandExists("sshd"))
@@ -2114,12 +2519,12 @@ bool Security::updateSecurity()
         return false;
     }
 
-    if (!commandExists("curl") && !commandExists("wget") && !ensureCommand("curl", "curl", "curl"))
+    if (!ensureCommand("base64", "coreutils", "coreutils"))
     {
         return false;
     }
 
-    std::cout << "\n[1/7] Downloading new Security script...\n";
+    std::cout << "\n[1/7] Downloading and verifying new Security script...\n";
 
     if (!downloadScriptToTemp())
     {
@@ -2133,7 +2538,7 @@ bool Security::updateSecurity()
             executeRemote("rm -f " + shellQuote(SECURITY_TEMP_SCRIPT), out, code, true);
         };
 
-    std::cout << "[2/7] Verification passed.\n";
+    std::cout << "[2/7] Signature and verification passed.\n";
 
     output.clear();
 
@@ -2409,7 +2814,7 @@ void Security::menu()
 
         if (!std::getline(std::cin, choice))
         {
-            break; 
+            break;
         }
 
         choice = trim(choice);
@@ -2526,30 +2931,25 @@ void Security::menu()
             continue;
         }
 
+
         if (choice == "6")
         {
-            if (!checkRootOrSudo())
+            std::cout << "\nInstalling / updating SSH Hardening module...\n";
+
+            const bool installed = webInstall();
+
+            if (installed)
             {
-                continue;
+                std::cout << "\nSSH Hardening module installed successfully.\n";
             }
-
-            if (!serviceExists())
+            else
             {
-                std::cout << "\n[ERROR] Security service is not installed.\n";
-                continue;
+                std::cout << "\nSSH Hardening installation failed.\n";
             }
-
-            std::string output;
-            int exitCode = -1;
-
-            executeRemote("journalctl -u " + SECURITY_SERVICE + " -n 100 --no-pager", output, exitCode, true, 60);
-
-            std::cout << "\n========================================\n Security logs\n========================================\n\n";
-            std::cout << output;
-            std::cout << "\n========================================\n";
 
             continue;
         }
+
 
         if (choice == "7")
         {
@@ -2557,7 +2957,8 @@ void Security::menu()
                 << "The current brute_force_guard.py will be backed up before replacement.\n"
                 << "Runtime data in /opt/serverguard/data will NOT be changed.\n"
                 << "The Security service will be restarted after the update.\n"
-                << "If the new version does not run, the previous one is restored automatically.\n\n"
+                << "If the new version does not run, the previous one is restored automatically.\n"
+                << "The module is verified (Ed25519 + SHA-256) before it is uploaded.\n\n"
                 << "Source:\n" << SECURITY_UPDATE_URL << "\n\n"
                 << "Continue? [y/N]: ";
 
@@ -2690,7 +3091,7 @@ long long Security::webThreats()
     std::string output;
     int exitCode = -1;
 
-    
+
     const std::string command =
         "if [ -f " + shellQuote(SECURITY_STATS_FILE) + " ]; then "
         "python3 -c "
