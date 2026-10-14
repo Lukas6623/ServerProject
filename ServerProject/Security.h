@@ -122,7 +122,7 @@ private:
     bool ufwIsActive();
     bool setupFirewall(bool& firewallManaged);
 
-
+    bool verifyScriptSignature();
     bool createDirectories();
     bool setFilePermissions();
     bool createSystemdService();
