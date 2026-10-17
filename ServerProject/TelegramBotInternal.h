@@ -29,10 +29,11 @@ inline const std::string TELEGRAM_SERVICE =
 inline const std::string TELEGRAM_SERVICE_PATH =
 "/etc/systemd/system/serverguard-telegram.service";
 
+
 inline const std::string GITHUB_TELEGRAM_REPOSITORY_ZIP =
-"https://github.com/"
-"Lukas6623/ServerGuardTelegram/"
-"archive/refs/heads/main.zip";
+"https://raw.githubusercontent.com/"
+"Lukas6623/ServerGuardTelegram/main/"
+"ServerGuardTelegram.zip";
 
 inline const std::string TELEGRAM_UPDATE_DIR =
 "/opt/serverguard/telegram/.repository_update";

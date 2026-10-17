@@ -34,8 +34,8 @@
 #pragma comment(lib, "crypt32.lib")
 
 
- 
- 
+
+
 enum class AuthMethod
 {
     Password,
@@ -344,7 +344,46 @@ static std::string unprotectSecret(const std::string& hex)
 //  Profile storage (servers.cfg, tab separated)
 // ============================================================
 
-static const char* PROFILES_FILE = "servers.cfg";
+// Data folder: C:\Users\<user>\AppData\Local\ServerGuard
+// Created automatically if it does not exist.
+static std::string appDataDir()
+{
+    static std::string dir;
+
+    if (!dir.empty())
+        return dir;
+
+    char* base = nullptr;
+    size_t len = 0;
+
+    if (_dupenv_s(&base, &len, "LOCALAPPDATA") != 0 || !base || !*base)
+    {
+        if (base)
+            free(base);
+
+        // Fallback: current working directory
+        dir = ".";
+        return dir;
+    }
+
+    dir = std::string(base) + "\\ServerGuard";
+
+    free(base);
+
+    if (!CreateDirectoryA(dir.c_str(), nullptr) &&
+        GetLastError() != ERROR_ALREADY_EXISTS)
+    {
+        std::cout << "Warning: cannot create folder " << dir
+            << " (Windows error " << GetLastError() << "). "
+            "Using current folder.\n";
+
+        dir = ".";
+    }
+
+    return dir;
+}
+
+static const std::string PROFILES_FILE = appDataDir() + "\\servers.cfg";
 static const char* LEGACY_FILE = "server.cfg";
 
 static std::string cleanField(std::string s)
@@ -494,6 +533,23 @@ static void migrateLegacyConfig()
         << backup << ".\n"
         << "It contains a plain-text password - delete it when you "
         "no longer need it.\n\n";
+}
+
+// Creates an empty servers.cfg on first launch if it does not exist
+static void ensureProfilesFile()
+{
+    if (fileExists(PROFILES_FILE))
+        return;
+
+    std::ofstream file(PROFILES_FILE, std::ios::app);
+
+    if (!file.is_open())
+    {
+        std::cout << "Warning: cannot create " << PROFILES_FILE << "\n";
+        return;
+    }
+
+    std::cout << "Config file created: " << PROFILES_FILE << "\n";
 }
 
 
@@ -660,128 +716,217 @@ static bool editProfile(Config& cfg, bool isNew)
 
 bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
 {
-    std::string algo = "SHA256";
+    if (!session)
+    {
+        std::cout << "[SSH] ERROR: SSH session is unavailable.\n";
+        return false;
+    }
 
-    size_t hashLen = 32;
-
+    // SHA-256 fingerprint of the server host key.
     const char* raw =
         libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
 
     if (!raw)
     {
-        algo = "SHA1";
-        hashLen = 20;
-
-        raw = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA1);
-    }
-
-    if (!raw)
-    {
         std::cout
-            << "Warning: cannot read server host key fingerprint.\n";
+            << "[SSH] SECURITY ERROR: Cannot calculate server fingerprint.\n"
+            << "[SSH] Connection rejected.\n";
 
-        return true;
-    }
-
-    std::string fingerprint =
-        algo + ":" +
-        toHex(reinterpret_cast<const unsigned char*>(raw), hashLen);
-
-    std::string id =
-        cfg.host + ":" + std::to_string(cfg.port);
-
-    std::vector<std::string> lines;
-
-    std::string storedFingerprint;
-    bool found = false;
-
-    {
-        std::ifstream in("known_hosts.txt");
-
-        std::string line;
-
-        while (std::getline(in, line))
-        {
-            line = trim(line);
-
-            if (line.empty())
-                continue;
-
-            size_t space = line.find(' ');
-
-            if (space != std::string::npos && line.substr(0, space) == id)
-            {
-                found = true;
-                storedFingerprint = trim(line.substr(space + 1));
-            }
-
-            lines.push_back(line);
-        }
-    }
-
-    if (found && storedFingerprint == fingerprint)
-    {
-        std::cout << "Host key verified.\n";
-
-        return true;
-    }
-
-    if (found)
-    {
-        std::cout << "\n########################################\n";
-        std::cout << "  WARNING: SERVER HOST KEY HAS CHANGED!\n";
-        std::cout << "########################################\n";
-        std::cout << "Someone may be intercepting the connection "
-            "(man-in-the-middle),\n";
-        std::cout << "or the server was reinstalled.\n\n";
-        std::cout << "Stored: " << storedFingerprint << "\n";
-        std::cout << "Now:    " << fingerprint << "\n\n";
-
-        std::string answer =
-            readLine("Trust the new key and replace the stored one? (yes/no): ", "no");
-
-        if (toLower(answer) != "yes")
-        {
-            return false;
-        }
-
-        std::ofstream out("known_hosts.txt", std::ios::trunc);
-
-        for (const std::string& line : lines)
-        {
-            size_t space = line.find(' ');
-
-            if (space != std::string::npos && line.substr(0, space) == id)
-            {
-                out << id << ' ' << fingerprint << '\n';
-            }
-            else
-            {
-                out << line << '\n';
-            }
-        }
-
-        return true;
-    }
-
-    std::cout << "\nFirst connection to " << id << ".\n";
-    std::cout << "Server host key fingerprint:\n";
-    std::cout << fingerprint << "\n\n";
-
-    std::string answer =
-        readLine("Trust this server and continue? (yes/no): ", "no");
-
-    if (toLower(answer) != "yes")
-    {
+        // Fail closed: never trust a host whose key could not be checked.
         return false;
     }
 
-    std::ofstream out("known_hosts.txt", std::ios::app);
+    const std::string fingerprint =
+        "SHA256:" +
+        toHex(reinterpret_cast<const unsigned char*>(raw), 32);
 
-    out << id << ' ' << fingerprint << '\n';
+    const std::string id =
+        cfg.host + ":" + std::to_string(cfg.port);
 
+    const std::string fileName = appDataDir() + "\\known_hosts.txt";
+
+    std::vector<std::string> lines;
+    std::string storedFingerprint;
+    bool found = false;
+
+    // Read the trusted host keys.
+    {
+        std::ifstream in(fileName);
+
+        if (in.is_open())
+        {
+            std::string line;
+
+            while (std::getline(in, line))
+            {
+                line = trim(line);
+
+                if (line.empty())
+                    continue;
+
+                const size_t space = line.find(' ');
+
+                if (space != std::string::npos &&
+                    line.substr(0, space) == id)
+                {
+                    // If duplicate entries exist, do not silently
+                    // choose one: treat conflicting entries as an error.
+                    const std::string value = trim(line.substr(space + 1));
+
+                    if (found && storedFingerprint != value)
+                    {
+                        std::cout
+                            << "[SSH] SECURITY ERROR: Conflicting saved keys for "
+                            << id << ".\n"
+                            << "[SSH] Resolve the saved entries manually.\n";
+
+                        return false;
+                    }
+
+                    found = true;
+                    storedFingerprint = value;
+                }
+
+                lines.push_back(line);
+            }
+        }
+        else
+        {
+            // A missing file is acceptable for a first connection.
+            // Other filesystem errors will be caught when saving.
+            std::ifstream check(fileName);
+
+            if (check.bad())
+            {
+                std::cout << "[SSH] Cannot inspect known_hosts file.\n";
+                return false;
+            }
+        }
+    }
+
+    // A previously trusted key matches.
+    if (found && storedFingerprint == fingerprint)
+    {
+        std::cout << "[SSH] Host key verified.\n";
+        return true;
+    }
+
+    // First connection or changed host key.
+    if (found)
+    {
+        std::cout
+            << "\n========================================\n"
+            << " SECURITY WARNING: HOST KEY CHANGED\n"
+            << "========================================\n"
+            << "Server:  " << id << "\n"
+            << "Saved:   " << storedFingerprint << "\n"
+            << "Current: " << fingerprint << "\n\n"
+            << "Possible reasons:\n"
+            << "  - VPS was reinstalled;\n"
+            << "  - SSH host keys were regenerated;\n"
+            << "  - IP address now belongs to another server;\n"
+            << "  - possible man-in-the-middle attack.\n\n"
+            << "Verify the CURRENT fingerprint through your hosting\n"
+            << "provider's trusted console before accepting it.\n\n";
+    }
+    else
+    {
+        std::cout
+            << "\n[SSH] First connection to " << id << ".\n"
+            << "[SSH] Fingerprint: " << fingerprint << "\n"
+            << "[SSH] Verify it using a trusted server console.\n\n";
+    }
+
+    const std::string answer = toLower(
+        readLine(
+            found
+            ? "Replace the saved key after independent verification? (yes/no): "
+            : "Trust this key after independent verification? (yes/no): ",
+            "no"
+        )
+    );
+
+    if (answer != "yes")
+    {
+        std::cout << "[SSH] Connection aborted. Host key not trusted.\n";
+        return false;
+    }
+
+    // Build a replacement file in memory first.
+    std::vector<std::string> updated;
+    bool inserted = false;
+
+    for (const std::string& line : lines)
+    {
+        const size_t space = line.find(' ');
+
+        const bool sameHost =
+            space != std::string::npos &&
+            line.substr(0, space) == id;
+
+        if (sameHost)
+        {
+            if (!inserted)
+            {
+                updated.push_back(id + " " + fingerprint);
+                inserted = true;
+            }
+            // Remove duplicate entries for this exact host.
+        }
+        else
+        {
+            updated.push_back(line);
+        }
+    }
+
+    if (!inserted)
+        updated.push_back(id + " " + fingerprint);
+
+    // Do not claim success if the trusted key cannot be saved.
+    const std::string tempFile = fileName + ".tmp";
+
+    {
+        std::ofstream out(tempFile, std::ios::trunc);
+
+        if (!out.is_open())
+        {
+            std::cout << "[SSH] ERROR: Cannot write " << tempFile << ".\n";
+            return false;
+        }
+
+        for (const std::string& line : updated)
+            out << line << '\n';
+
+        out.flush();
+
+        if (!out.good())
+        {
+            out.close();
+            std::remove(tempFile.c_str());
+
+            std::cout << "[SSH] ERROR: Failed to save trusted host key.\n";
+            return false;
+        }
+    }
+
+    // Replace the old file only after the temporary file is complete.
+    if (!MoveFileExA(
+        tempFile.c_str(),
+        fileName.c_str(),
+        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    {
+        std::cout
+            << "[SSH] ERROR: Cannot replace known_hosts file. Windows error: "
+            << GetLastError() << "\n";
+
+        std::remove(tempFile.c_str());
+        return false;
+    }
+
+    std::cout << "[SSH] Host key saved successfully.\n";
     return true;
 }
+
 
 
 // ============================================================
@@ -2170,9 +2315,11 @@ int main()
         return 1;
     }
 
+
     try
     {
         migrateLegacyConfig();
+        ensureProfilesFile();   // creates empty servers.cfg if missing
 
         serverMenu();
     }
