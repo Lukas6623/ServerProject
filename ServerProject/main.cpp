@@ -16,6 +16,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <wincrypt.h>
+#include <shellapi.h>
 
 #include <libssh2.h>
 
@@ -32,6 +33,7 @@
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "shell32.lib")
 
 
 
@@ -106,6 +108,16 @@ struct Config
     std::string keyPath;
     std::string passphrase;     // never saved
 };
+
+
+// ============================================================
+//  Update request flag
+//  Set by the 'update' terminal command. The installer is
+//  launched from main() after the session has been closed and
+//  all resources have been released.
+// ============================================================
+
+static bool g_updateRequested = false;
 
 
 // ============================================================
@@ -277,6 +289,108 @@ static bool fromHex(const std::string& hex, std::string& out)
         out += static_cast<char>((hi << 4) | lo);
     }
 
+    return true;
+}
+
+
+// ============================================================
+//  Updater: launches SetupServerGuard.exe next to ServerGuard.exe
+// ============================================================
+
+static std::string exeDirectory()
+{
+    char path[MAX_PATH] = {};
+    DWORD n = GetModuleFileNameA(nullptr, path, MAX_PATH);
+
+    if (n == 0 || n >= MAX_PATH)
+        return "";
+
+    std::string full(path, n);
+    size_t slash = full.find_last_of("\\/");
+
+    return slash == std::string::npos ? "" : full.substr(0, slash);
+}
+
+static std::string getEnvVar(const char* name)
+{
+    char* value = nullptr;
+    size_t len = 0;
+
+    if (_dupenv_s(&value, &len, name) != 0 || !value)
+        return "";
+
+    std::string result = value;
+
+    free(value);
+
+    return result;
+}
+
+static bool runUpdater()
+{
+    // Search order:
+    //   1. next to the running ServerGuard.exe
+    //   2. the installed copy: C:\Program Files\ServerGuard
+    //   3. C:\Program Files (x86)\ServerGuard
+    std::vector<std::string> candidates;
+
+    std::string exeDir = exeDirectory();
+
+    if (!exeDir.empty())
+        candidates.push_back(exeDir);
+
+    std::string pf64 = getEnvVar("ProgramW6432");
+    std::string pf = getEnvVar("ProgramFiles");
+    std::string pf86 = getEnvVar("ProgramFiles(x86)");
+
+    if (!pf64.empty()) candidates.push_back(pf64 + "\\ServerGuard");
+    if (!pf.empty())   candidates.push_back(pf + "\\ServerGuard");
+    if (!pf86.empty()) candidates.push_back(pf86 + "\\ServerGuard");
+
+    std::string dir;
+    std::string setup;
+
+    for (const std::string& candidate : candidates)
+    {
+        std::string path = candidate + "\\SetupServerGuard.exe";
+
+        if (fileExists(path))
+        {
+            dir = candidate;
+            setup = path;
+            break;
+        }
+    }
+
+    if (setup.empty())
+    {
+        std::cout << "SetupServerGuard.exe not found. Searched:\n";
+
+        for (const std::string& candidate : candidates)
+            std::cout << "  " << candidate << "\\SetupServerGuard.exe\n";
+
+        return false;
+    }
+
+    std::cout << "Launching " << setup << " ...\n";
+
+    HINSTANCE rc = ShellExecuteA(
+        nullptr,
+        "open",
+        setup.c_str(),
+        nullptr,
+        dir.c_str(),
+        SW_SHOWNORMAL
+    );
+
+    if (reinterpret_cast<INT_PTR>(rc) <= 32)
+    {
+        std::cout << "Failed to launch the installer (code "
+            << reinterpret_cast<INT_PTR>(rc) << ").\n";
+        return false;
+    }
+
+    std::cout << "Installer started.\n";
     return true;
 }
 
@@ -1651,6 +1765,7 @@ void runServerTerminal(
     std::cout << "Type 'ports' to manage firewall ports (open/close/block).\n";
     std::cout << "Type 'web install' to install the web interface.\n";
     std::cout << "Type 'web status | web url | web remove' to manage it.\n";
+    std::cout << "Type 'update' to close ServerGuard and run the installer (SetupServerGuard.exe).\n";
     std::cout << "Type 'exit' to disconnect and return to the server list.\n";
     std::cout << "\n";
     std::cout << "Type 'help' for detailed information.\n";
@@ -1695,6 +1810,22 @@ void runServerTerminal(
                 showHelp();
 
                 continue;
+            }
+
+            // update: close the session cleanly, then main() launches
+            // SetupServerGuard.exe once everything has been released.
+            {
+                std::string lc = toLower(command);
+
+                if (lc == "update" || lc == "обновить" || lc == "upgrade")
+                {
+                    g_updateRequested = true;
+
+                    std::cout
+                        << "Closing session and starting the updater...\n";
+
+                    break;
+                }
             }
 
             {
@@ -1824,7 +1955,7 @@ void runServerTerminal(
             std::cout
                 << "Available commands: "
                 << "help, ls, pwd, cd, nano, security, telegram, "
-                << "hardening, sshkeys, fileguard, ports, web, exit\n";
+                << "hardening, sshkeys, fileguard, ports, web, update, exit\n";
         }
         catch (const std::exception& e)
         {
@@ -2279,6 +2410,11 @@ static void serverMenu()
                 std::cout << "\nUnknown error.\n";
             }
 
+            // 'update' was requested inside the session:
+            // leave the menu so main() can launch the installer.
+            if (g_updateRequested)
+                return;
+
             continue;
         }
 
@@ -2337,6 +2473,19 @@ int main()
     libssh2_exit();
 
     WSACleanup();
+
+    // Launch the installer only after the SSH session is closed and
+    // all resources are released, so ServerGuard.exe is not busy.
+    if (g_updateRequested)
+    {
+        if (!runUpdater())
+        {
+            std::cout << "Update was not started. Press Enter to exit...";
+
+            std::string dummy;
+            std::getline(std::cin, dummy);
+        }
+    }
 
     return 0;
 }

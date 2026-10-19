@@ -539,14 +539,26 @@ bool SSHHardening::checkRootOrSudo()
     return true;
 }
 
+
 bool SSHHardening::checkScript()
 {
     std::string output;
     int exitCode = -1;
 
-    executeRemote(
-        "test -f " + shellQuote(HARDENING_SCRIPT),
-        output, exitCode, false);
+    if (!executeRemote(
+        "test -f " + shellQuote(HARDENING_SCRIPT) +
+        " && test -r " + shellQuote(HARDENING_SCRIPT),
+        output,
+        exitCode,
+        true))
+    {
+        if (!output.empty())
+        {
+            std::cout << output << '\n';
+        }
+
+        return false;
+    }
 
     return exitCode == 0;
 }
