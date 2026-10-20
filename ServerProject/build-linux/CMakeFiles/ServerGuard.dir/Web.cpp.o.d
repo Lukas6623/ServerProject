@@ -1,6 +1,6 @@
 CMakeFiles/ServerGuard.dir/Web.cpp.o: \
  /mnt/d/ServerProject/ServerProject/Web.cpp /usr/include/stdc-predef.h \
- /mnt/d/ServerProject/ServerProject/Web.h /usr/include/c++/13/string \
+ /mnt/d/ServerProject/ServerProject/Platform.h /usr/include/c++/13/string \
  /usr/include/c++/13/bits/requires_hosted.h \
  /usr/include/x86_64-linux-gnu/c++/13/bits/c++config.h \
  /usr/include/x86_64-linux-gnu/c++/13/bits/os_defines.h \
@@ -115,9 +115,7 @@ CMakeFiles/ServerGuard.dir/Web.cpp.o: \
  /usr/include/c++/13/bits/memory_resource.h /usr/include/c++/13/cstddef \
  /usr/include/c++/13/bits/uses_allocator.h \
  /usr/include/c++/13/bits/uses_allocator_args.h /usr/include/c++/13/tuple \
- /mnt/d/ServerProject/ServerProject/WebServer.h \
- /mnt/d/ServerProject/ServerProject/Platform.h /usr/include/c++/13/vector \
- /usr/include/c++/13/bits/stl_uninitialized.h \
+ /usr/include/c++/13/vector /usr/include/c++/13/bits/stl_uninitialized.h \
  /usr/include/c++/13/bits/stl_vector.h \
  /usr/include/c++/13/bits/stl_bvector.h \
  /usr/include/c++/13/bits/vector.tcc /usr/include/c++/13/fstream \
@@ -269,7 +267,8 @@ CMakeFiles/ServerGuard.dir/Web.cpp.o: \
  /usr/include/openssl/objects.h /usr/include/openssl/obj_mac.h \
  /usr/include/openssl/asn1.h /usr/include/openssl/asn1err.h \
  /usr/include/openssl/objectserr.h /usr/include/openssl/rand.h \
- /usr/include/openssl/randerr.h /usr/include/libssh2.h \
+ /usr/include/openssl/randerr.h /mnt/d/ServerProject/ServerProject/Web.h \
+ /mnt/d/ServerProject/ServerProject/WebServer.h /usr/include/libssh2.h \
  /mnt/d/ServerProject/ServerProject/TelegramBot.h \
  /usr/include/c++/13/atomic /usr/include/c++/13/bits/atomic_base.h \
  /usr/include/c++/13/bits/atomic_lockfree_defines.h \

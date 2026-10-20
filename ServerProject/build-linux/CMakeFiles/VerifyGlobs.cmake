@@ -28,6 +28,8 @@ set(OLD_GLOB
   "/mnt/d/ServerProject/ServerProject/handlers/WebServer_TelegramBot.cpp"
   "/mnt/d/ServerProject/ServerProject/install/TelegramBot_Install.cpp"
   "/mnt/d/ServerProject/ServerProject/main.cpp"
+  "/mnt/d/ServerProject/ServerProject/out/build/x64-debug/CMakeFiles/4.3.1-msvc1/CompilerIdCXX/CMakeCXXCompilerId.cpp"
+  "/mnt/d/ServerProject/ServerProject/out/build/x64-release/CMakeFiles/4.3.1-msvc1/CompilerIdCXX/CMakeCXXCompilerId.cpp"
   "/mnt/d/ServerProject/ServerProject/remove/TelegramBot_Remove.cpp"
   "/mnt/d/ServerProject/ServerProject/restart/TelegramBot_Restart.cpp"
   "/mnt/d/ServerProject/ServerProject/stop/TelegramBot_Stop.cpp"
