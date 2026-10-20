@@ -1,10 +1,8 @@
 #define NOMINMAX
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <windows.h>
-#include <winhttp.h>
-#include <bcrypt.h>
+#include "Platform.h"
+#include "Web.h"
+#include "WebServer.h"
 
 #include <algorithm>
 #include <cctype>
@@ -14,105 +12,125 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <system_error>
+#include <cstdio>
+#include <limits>
+#include <cstdint>
 
-#include "Web.h"
-#include "WebServer.h"
-
-#pragma comment(lib, "winhttp.lib")
-#pragma comment(lib, "bcrypt.lib")
+#ifdef _WIN32
+#include <windows.h>
+#include <bcrypt.h>
+#else
+#include <openssl/sha.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <cerrno>
+#endif
 
 namespace fs = std::filesystem;
 
-
-// Манифест с адресом и SHA256 архива сайта
 static const char* MANIFEST_URL =
 "https://raw.githubusercontent.com/Lukas6623/ServerGuard/main/updates/manifest.json";
 
-static const size_t MAX_MANIFEST_BYTES = 256 * 1024;
-static const size_t MAX_ZIP_BYTES = 64 * 1024 * 1024;
+static constexpr size_t MAX_MANIFEST_BYTES = 256 * 1024;
+static constexpr size_t MAX_ZIP_BYTES = 64 * 1024 * 1024;
 
-
-// ===================== ПУТИ =====================
+// ============================================================
+// PATHS
+// ============================================================
 
 std::string webBaseDir()
 {
-    char* value = nullptr;
-    size_t len = 0;
+#ifdef _WIN32
+    const std::string value = plat::getEnv("LOCALAPPDATA");
 
-    if (_dupenv_s(&value, &len, "LOCALAPPDATA") != 0 || !value)
-    {
-        return "";
-    }
+    if (!value.empty())
+        return (fs::path(value) / "ServerGuard").string();
 
-    std::string result = std::string(value) + "\\ServerGuard";
+    return "";
+#else
+    const std::string dataHome = plat::getEnv("XDG_DATA_HOME");
 
-    free(value);
+    if (!dataHome.empty())
+        return (fs::path(dataHome) / "ServerGuard").string();
 
-    return result;
+    const std::string home = plat::getEnv("HOME");
+
+    if (!home.empty())
+        return (fs::path(home) / ".local" / "share" / "ServerGuard").string();
+
+    return "";
+#endif
 }
-
 
 std::string webRootPath()
 {
-    std::string base = webBaseDir();
+    const std::string base = webBaseDir();
 
     if (base.empty())
     {
-        // запасной вариант, если LOCALAPPDATA недоступна
+#ifdef _WIN32
         return "C:\\Program Files\\ServerGuard\\web";
+#else
+        return "/opt/serverguard/web";
+#endif
     }
 
-    return base + "\\web";
+    return (fs::path(base) / "web").string();
 }
-
 
 static fs::path shaFilePath()
 {
     return fs::path(webBaseDir()) / "web.sha256";
 }
 
-
 static std::string installedSha()
 {
     std::ifstream in(shaFilePath());
 
     std::string value;
-
     std::getline(in, value);
 
     return value;
 }
 
-
-// ===================== ВСПОМОГАТЕЛЬНОЕ =====================
+// ============================================================
+// STRING HELPERS
+// ============================================================
 
 static std::string lowerCopy(std::string s)
 {
     std::transform(
         s.begin(), s.end(), s.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); }
-    );
+        [](unsigned char c)
+        {
+            return static_cast<char>(std::tolower(c));
+        });
 
     return s;
 }
-
 
 static std::string trimCopy(const std::string& s)
 {
     size_t a = 0;
     size_t b = s.size();
 
-    while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) a++;
-    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) b--;
+    while (a < b && std::isspace(static_cast<unsigned char>(s[a])))
+        ++a;
+
+    while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1])))
+        --b;
 
     return s.substr(a, b - a);
 }
 
-
-// Достаёт строковое значение "key": "value" из простого JSON
-static std::string jsonString(const std::string& json, const std::string& key)
+// Extracts a string property from the manifest JSON.
+// This intentionally supports the simple string fields used by the manifest.
+static std::string jsonString(
+    const std::string& json,
+    const std::string& key)
 {
-    std::string needle = "\"" + key + "\"";
+    const std::string needle = "\"" + key + "\"";
 
     size_t p = json.find(needle);
 
@@ -124,217 +142,288 @@ static std::string jsonString(const std::string& json, const std::string& key)
     if (p == std::string::npos)
         return "";
 
-    p = json.find('"', p + 1);
+    ++p;
 
-    if (p == std::string::npos)
+    while (p < json.size() &&
+        std::isspace(static_cast<unsigned char>(json[p])))
+        ++p;
+
+    if (p >= json.size() || json[p] != '"')
         return "";
 
-    size_t e = json.find('"', p + 1);
+    ++p;
 
-    if (e == std::string::npos)
-        return "";
+    std::string result;
 
-    std::string value = json.substr(p + 1, e - p - 1);
-
-    // \/ -> /
-    size_t pos = 0;
-
-    while ((pos = value.find("\\/", pos)) != std::string::npos)
+    while (p < json.size())
     {
-        value.replace(pos, 2, "/");
-        pos += 1;
+        const char c = json[p++];
+
+        if (c == '"')
+            return trimCopy(result);
+
+        if (c == '\\')
+        {
+            if (p >= json.size())
+                return "";
+
+            const char escaped = json[p++];
+
+            switch (escaped)
+            {
+            case '"':  result += '"';  break;
+            case '\\': result += '\\'; break;
+            case '/':  result += '/';  break;
+            case 'n':  result += '\n'; break;
+            case 'r':  result += '\r'; break;
+            case 't':  result += '\t'; break;
+
+                // The manifest fields we use do not require Unicode
+                // escape decoding. Reject unsupported escapes.
+            default:
+                return "";
+            }
+        }
+        else
+        {
+            result += c;
+        }
     }
 
-    return trimCopy(value);
+    return "";
 }
 
-
-struct WinHttpHandle
+static bool validHttpsUrl(const std::string& url)
 {
-    HINTERNET h = nullptr;
+    if (url.rfind("https://", 0) != 0)
+        return false;
 
-    WinHttpHandle() = default;
-    explicit WinHttpHandle(HINTERNET handle) : h(handle) {}
+    if (url.size() > 4096)
+        return false;
 
-    ~WinHttpHandle()
+    for (unsigned char c : url)
     {
-        if (h)
-            WinHttpCloseHandle(h);
+        // Prevent shell injection, control characters and malformed URLs.
+        if (c <= 0x20 || c == 0x7f ||
+            c == '"' || c == '\'' || c == '`' ||
+            c == '<' || c == '>' || c == '\\' ||
+            c == '|' || c == ';' || c == '$' ||
+            c == '(' || c == ')' || c == '{' ||
+            c == '}' || c == '\n' || c == '\r')
+        {
+            return false;
+        }
     }
 
-    WinHttpHandle(const WinHttpHandle&) = delete;
-    WinHttpHandle& operator=(const WinHttpHandle&) = delete;
-};
+    return url.size() > 8;
+}
 
+// ============================================================
+// SHELL QUOTING AND PROCESS EXECUTION
+// ============================================================
 
-// Скачивание по HTTPS (редиректы GitHub обрабатываются автоматически)
-static bool httpGet(const std::string& url, std::string& out, size_t maxBytes)
+#ifndef _WIN32
+static std::string shellQuote(const std::string& value)
+{
+    std::string result = "'";
+
+    for (char c : value)
+    {
+        if (c == '\'')
+            result += "'\\''";
+        else
+            result += c;
+    }
+
+    result += "'";
+    return result;
+}
+#else
+static std::string shellQuote(const std::string& value)
+{
+    std::string result = "\"";
+
+    for (char c : value)
+    {
+        if (c == '"')
+            result += "\\\"";
+        else
+            result += c;
+    }
+
+    result += "\"";
+    return result;
+}
+#endif
+
+static int runCommand(const std::string& command)
+{
+#ifdef _WIN32
+    // The command is built internally from quoted arguments.
+    return std::system(command.c_str());
+#else
+    const pid_t pid = fork();
+
+    if (pid < 0)
+        return -1;
+
+    if (pid == 0)
+    {
+        execl(
+            "/bin/sh",
+            "sh",
+            "-c",
+            command.c_str(),
+            static_cast<char*>(nullptr));
+
+        _exit(127);
+    }
+
+    int status = 0;
+
+    while (waitpid(pid, &status, 0) < 0)
+    {
+        if (errno != EINTR)
+            return -1;
+    }
+
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status);
+
+    return -1;
+#endif
+}
+
+// ============================================================
+// FILE HELPERS
+// ============================================================
+
+static bool readBinaryFile(
+    const fs::path& path,
+    std::string& data,
+    size_t maxBytes)
+{
+    data.clear();
+
+    std::error_code ec;
+    const auto fileSize = fs::file_size(path, ec);
+
+    if (ec || fileSize > maxBytes)
+        return false;
+
+    std::ifstream in(path, std::ios::binary);
+
+    if (!in)
+        return false;
+
+    data.resize(static_cast<size_t>(fileSize));
+
+    if (!data.empty())
+        in.read(&data[0], static_cast<std::streamsize>(data.size()));
+
+    return in.good() || in.eof();
+}
+
+static bool writeBinaryFile(
+    const fs::path& path,
+    const std::string& data)
+{
+    std::ofstream out(
+        path,
+        std::ios::binary | std::ios::trunc);
+
+    if (!out)
+        return false;
+
+    out.write(
+        data.data(),
+        static_cast<std::streamsize>(data.size()));
+
+    return static_cast<bool>(out);
+}
+
+// ============================================================
+// HTTPS DOWNLOAD
+// Requires curl.exe on Windows or curl on Linux.
+// ============================================================
+
+static bool httpGet(
+    const std::string& url,
+    std::string& out,
+    size_t maxBytes,
+    const fs::path& downloadPath)
 {
     out.clear();
 
-    std::wstring wurl(url.begin(), url.end());
-
-    wchar_t host[256] = {};
-    wchar_t path[2048] = {};
-    wchar_t extra[2048] = {};
-
-    URL_COMPONENTSW uc = {};
-    uc.dwStructSize = sizeof(uc);
-    uc.lpszHostName = host;
-    uc.dwHostNameLength = 256;
-    uc.lpszUrlPath = path;
-    uc.dwUrlPathLength = 2048;
-    uc.lpszExtraInfo = extra;
-    uc.dwExtraInfoLength = 2048;
-
-    if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc))
+    if (!validHttpsUrl(url))
     {
-        std::cout << "Invalid URL: " << url << "\n";
+        std::cout << "Invalid or unsupported HTTPS URL.\n";
         return false;
     }
 
-    if (uc.nScheme != INTERNET_SCHEME_HTTPS)
-    {
-        std::cout << "Only https:// URLs are allowed: " << url << "\n";
-        return false;
-    }
+    std::error_code ec;
+    fs::remove(downloadPath, ec);
 
-    std::wstring objectName = std::wstring(path) + extra;
+    std::string command;
 
-    WinHttpHandle session(
-        WinHttpOpen(
-            L"ServerGuard/1.0",
-            WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-            WINHTTP_NO_PROXY_NAME,
-            WINHTTP_NO_PROXY_BYPASS,
-            0
-        )
-    );
-
-    if (!session.h)
-    {
-        std::cout << "WinHttpOpen failed (" << GetLastError() << ").\n";
-        return false;
-    }
-
-#ifndef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2
-#define WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 0x00000800
+#ifdef _WIN32
+    command =
+        "curl.exe --fail --location --silent --show-error "
+        "--max-time 60 --max-filesize " +
+        std::to_string(maxBytes) +
+        " --output " + shellQuote(downloadPath.string()) +
+        " " + shellQuote(url);
+#else
+    command =
+        "curl --fail --location --silent --show-error "
+        "--max-time 60 --max-filesize " +
+        std::to_string(maxBytes) +
+        " --output " + shellQuote(downloadPath.string()) +
+        " " + shellQuote(url);
 #endif
 
-    DWORD protocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+    const int result = runCommand(command);
 
-    WinHttpSetOption(
-        session.h,
-        WINHTTP_OPTION_SECURE_PROTOCOLS,
-        &protocols,
-        sizeof(protocols)
-    );
-
-    WinHttpSetTimeouts(session.h, 15000, 15000, 30000, 60000);
-
-    WinHttpHandle connection(
-        WinHttpConnect(session.h, host, uc.nPort, 0)
-    );
-
-    if (!connection.h)
+    if (result != 0)
     {
-        std::cout << "Cannot connect to " << url << " (" << GetLastError() << ").\n";
+        fs::remove(downloadPath, ec);
+
+        std::cout << "HTTPS download failed (curl exit code "
+            << result << ").\n";
+
         return false;
     }
 
-    WinHttpHandle request(
-        WinHttpOpenRequest(
-            connection.h,
-            L"GET",
-            objectName.c_str(),
-            nullptr,
-            WINHTTP_NO_REFERER,
-            WINHTTP_DEFAULT_ACCEPT_TYPES,
-            WINHTTP_FLAG_SECURE
-        )
-    );
-
-    if (!request.h)
+    if (!readBinaryFile(downloadPath, out, maxBytes))
     {
-        std::cout << "WinHttpOpenRequest failed (" << GetLastError() << ").\n";
+        fs::remove(downloadPath, ec);
+        std::cout << "Downloaded file is missing or too large.\n";
         return false;
-    }
-
-    if (
-        !WinHttpSendRequest(
-            request.h,
-            WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-            WINHTTP_NO_REQUEST_DATA, 0,
-            0, 0) ||
-        !WinHttpReceiveResponse(request.h, nullptr))
-    {
-        std::cout << "Request failed (" << GetLastError() << ").\n";
-        return false;
-    }
-
-    DWORD status = 0;
-    DWORD statusSize = sizeof(status);
-
-    WinHttpQueryHeaders(
-        request.h,
-        WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        WINHTTP_HEADER_NAME_BY_INDEX,
-        &status,
-        &statusSize,
-        WINHTTP_NO_HEADER_INDEX
-    );
-
-    if (status != 200)
-    {
-        std::cout << "Server returned HTTP " << status << ".\n";
-        return false;
-    }
-
-    while (true)
-    {
-        DWORD available = 0;
-
-        if (!WinHttpQueryDataAvailable(request.h, &available))
-        {
-            std::cout << "Download error (" << GetLastError() << ").\n";
-            return false;
-        }
-
-        if (available == 0)
-            break;
-
-        if (out.size() + available > maxBytes)
-        {
-            std::cout << "Download is too large.\n";
-            return false;
-        }
-
-        size_t old = out.size();
-
-        out.resize(old + available);
-
-        DWORD read = 0;
-
-        if (!WinHttpReadData(request.h, &out[old], available, &read))
-        {
-            std::cout << "Download error (" << GetLastError() << ").\n";
-            return false;
-        }
-
-        out.resize(old + read);
     }
 
     return true;
 }
 
+// ============================================================
+// SHA-256
+// ============================================================
 
-static bool sha256Hex(const std::string& data, std::string& hex)
+static bool sha256Hex(
+    const std::string& data,
+    std::string& hex)
 {
+    unsigned char digest[32] = {};
+
+#ifdef _WIN32
     BCRYPT_ALG_HANDLE alg = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
 
     if (!BCRYPT_SUCCESS(
-        BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0)))
+        BCryptOpenAlgorithmProvider(
+            &alg,
+            BCRYPT_SHA256_ALGORITHM,
+            nullptr,
+            0)))
     {
         return false;
     }
@@ -342,34 +431,44 @@ static bool sha256Hex(const std::string& data, std::string& hex)
     DWORD objectLength = 0;
     DWORD copied = 0;
 
-    bool ok =
-        BCRYPT_SUCCESS(
-            BCryptGetProperty(
-                alg,
-                BCRYPT_OBJECT_LENGTH,
-                reinterpret_cast<PUCHAR>(&objectLength),
-                sizeof(objectLength),
-                &copied,
-                0));
+    bool ok = BCRYPT_SUCCESS(
+        BCryptGetProperty(
+            alg,
+            BCRYPT_OBJECT_LENGTH,
+            reinterpret_cast<PUCHAR>(&objectLength),
+            sizeof(objectLength),
+            &copied,
+            0));
 
     std::vector<UCHAR> object(ok ? objectLength : 0);
 
-    UCHAR digest[32] = {};
-
-    ok = ok &&
-        BCRYPT_SUCCESS(
-            BCryptCreateHash(
-                alg, &hash,
-                object.data(), objectLength,
-                nullptr, 0, 0)) &&
-        BCRYPT_SUCCESS(
-            BCryptHashData(
-                hash,
-                reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
-                static_cast<ULONG>(data.size()),
-                0)) &&
-        BCRYPT_SUCCESS(
-            BCryptFinishHash(hash, digest, sizeof(digest), 0));
+    if (ok)
+    {
+        ok =
+            BCRYPT_SUCCESS(
+                BCryptCreateHash(
+                    alg,
+                    &hash,
+                    object.data(),
+                    objectLength,
+                    nullptr,
+                    0,
+                    0)) &&
+            data.size() <= std::numeric_limits<ULONG>::max() &&
+            BCRYPT_SUCCESS(
+                BCryptHashData(
+                    hash,
+                    reinterpret_cast<PUCHAR>(
+                        const_cast<char*>(data.data())),
+                    static_cast<ULONG>(data.size()),
+                    0)) &&
+            BCRYPT_SUCCESS(
+                BCryptFinishHash(
+                    hash,
+                    digest,
+                    sizeof(digest),
+                    0));
+    }
 
     if (hash)
         BCryptDestroyHash(hash);
@@ -378,12 +477,22 @@ static bool sha256Hex(const std::string& data, std::string& hex)
 
     if (!ok)
         return false;
+#else
+    if (!SHA256(
+        reinterpret_cast<const unsigned char*>(data.data()),
+        data.size(),
+        digest))
+    {
+        return false;
+    }
+#endif
 
     static const char* digits = "0123456789abcdef";
 
     hex.clear();
+    hex.reserve(64);
 
-    for (UCHAR b : digest)
+    for (unsigned char b : digest)
     {
         hex += digits[b >> 4];
         hex += digits[b & 0x0F];
@@ -392,149 +501,160 @@ static bool sha256Hex(const std::string& data, std::string& hex)
     return true;
 }
 
+// ============================================================
+// ZIP EXTRACTION
+// ============================================================
 
-static DWORD runProcess(std::wstring commandLine)
+static bool extractZip(
+    const fs::path& zip,
+    const fs::path& dest)
 {
-    STARTUPINFOW si = {};
-    si.cb = sizeof(si);
+    std::error_code ec;
 
-    PROCESS_INFORMATION pi = {};
+    fs::create_directories(dest, ec);
 
-    if (!CreateProcessW(
-        nullptr,
-        commandLine.data(),
-        nullptr, nullptr,
-        FALSE,
-        CREATE_NO_WINDOW,
-        nullptr, nullptr,
-        &si, &pi))
-    {
-        return static_cast<DWORD>(-1);
-    }
+    if (ec)
+        return false;
 
-    WaitForSingleObject(pi.hProcess, 120000);
+#ifdef _WIN32
+    std::string command =
+        "powershell.exe -NoProfile -NonInteractive "
+        "-ExecutionPolicy Bypass -Command "
+        "\"Expand-Archive -LiteralPath '" +
+        zip.string() +
+        "' -DestinationPath '" +
+        dest.string() +
+        "' -Force\"";
 
-    DWORD exitCode = static_cast<DWORD>(-1);
-
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-
-    CloseHandle(pi.hThread);
-    CloseHandle(pi.hProcess);
-
-    return exitCode;
-}
-
-
-static std::wstring psQuote(const std::wstring& s)
-{
-    std::wstring r;
-
-    for (wchar_t c : s)
-    {
-        if (c == L'\'')
-            r += L"''";
-        else
-            r += c;
-    }
-
-    return r;
-}
-
-
-static bool extractZip(const fs::path& zip, const fs::path& dest)
-{
-    std::wstring cmd =
-        L"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "
-        L"\"Expand-Archive -LiteralPath '" + psQuote(zip.wstring()) +
-        L"' -DestinationPath '" + psQuote(dest.wstring()) +
-        L"' -Force\"";
-
-    if (runProcess(cmd) == 0)
+    if (runCommand(command) == 0)
         return true;
 
-    // запасной вариант: tar.exe есть в Windows 10+
-    std::wstring tar =
-        L"tar.exe -xf \"" + zip.wstring() +
-        L"\" -C \"" + dest.wstring() + L"\"";
+    command =
+        "tar.exe -xf " + shellQuote(zip.string()) +
+        " -C " + shellQuote(dest.string());
 
-    return runProcess(tar) == 0;
+    return runCommand(command) == 0;
+#else
+    // Requires the unzip utility to be installed.
+    const std::string command =
+        "unzip -q -o " + shellQuote(zip.string()) +
+        " -d " + shellQuote(dest.string());
+
+    return runCommand(command) == 0;
+#endif
 }
 
-
-// ===================== УСТАНОВКА =====================
+// ============================================================
+// WEB INSTALLATION
+// ============================================================
 
 bool installWebFiles()
 {
     std::error_code ec;
 
-    std::string base = webBaseDir();
+    const std::string base = webBaseDir();
 
     if (base.empty())
     {
+#ifdef _WIN32
         std::cout << "LOCALAPPDATA is not available.\n";
+#else
+        std::cout << "HOME and XDG_DATA_HOME are not available.\n";
+#endif
         return false;
     }
 
-    fs::path baseDir(base);
-    fs::path target(webRootPath());
-    fs::path tmpDir = baseDir / "web_tmp";
-    fs::path zipPath = baseDir / "web_download.zip";
+    const fs::path baseDir(base);
+    const fs::path target(webRootPath());
+    const fs::path tmpDir = baseDir / "web_tmp";
+    const fs::path zipPath = baseDir / "web_download.zip";
+    const fs::path manifestPath = baseDir / "manifest_download.json";
 
     fs::create_directories(baseDir, ec);
 
     if (ec)
     {
-        std::cout << "Cannot create folder: " << baseDir.string()
-            << " (" << ec.message() << ")\n";
+        std::cout << "Cannot create folder: "
+            << baseDir.string() << " (" << ec.message() << ")\n";
         return false;
     }
+
+#ifndef _WIN32
+    // Restrict downloaded data files to the current user.
+    fs::permissions(
+        baseDir,
+        fs::perms::owner_all,
+        fs::perm_options::replace,
+        ec);
+    ec.clear();
+#endif
 
     auto cleanup = [&]()
         {
             std::error_code e;
             fs::remove_all(tmpDir, e);
             fs::remove(zipPath, e);
+            fs::remove(manifestPath, e);
         };
 
-    // 1. манифест
+    // 1. Download the manifest.
     std::cout << "Reading manifest...\n";
 
     std::string manifest;
 
-    if (!httpGet(MANIFEST_URL, manifest, MAX_MANIFEST_BYTES))
+    if (!httpGet(
+        MANIFEST_URL,
+        manifest,
+        MAX_MANIFEST_BYTES,
+        manifestPath))
     {
         std::cout << "Cannot download manifest.json.\n";
+        cleanup();
         return false;
     }
 
-    std::string webUrl = jsonString(manifest, "web_url");
-    std::string webSha = lowerCopy(jsonString(manifest, "web_sha256"));
+    const std::string webUrl =
+        jsonString(manifest, "web_url");
 
-    if (webUrl.empty() || webSha.size() != 64)
+    const std::string webSha =
+        lowerCopy(jsonString(manifest, "web_sha256"));
+
+    if (!validHttpsUrl(webUrl) || webSha.size() != 64 ||
+        !std::all_of(
+            webSha.begin(),
+            webSha.end(),
+            [](unsigned char c)
+            {
+                return std::isxdigit(c) != 0;
+            }))
     {
         std::cout << "manifest.json has no valid web_url / web_sha256.\n";
+        cleanup();
         return false;
     }
 
-    // 2. скачивание архива
+    // 2. Download the ZIP archive.
     std::cout << "Downloading: " << webUrl << "\n";
 
     std::string zipData;
 
-    if (!httpGet(webUrl, zipData, MAX_ZIP_BYTES))
+    if (!httpGet(webUrl, zipData, MAX_ZIP_BYTES, zipPath))
     {
         std::cout << "Cannot download web archive.\n";
+        cleanup();
         return false;
     }
 
-    std::cout << "Downloaded " << (zipData.size() / 1024) << " KB.\n";
+    std::cout << "Downloaded "
+        << (zipData.size() / 1024) << " KB.\n";
 
-    // 3. проверка SHA256
+    // 3. Verify SHA-256 before extracting anything.
     std::string actualSha;
 
     if (!sha256Hex(zipData, actualSha))
     {
         std::cout << "Cannot calculate SHA256.\n";
+        cleanup();
         return false;
     }
 
@@ -543,58 +663,68 @@ bool installWebFiles()
         std::cout << "SHA256 mismatch! Installation aborted.\n";
         std::cout << "Expected: " << webSha << "\n";
         std::cout << "Actual:   " << actualSha << "\n";
+        cleanup();
         return false;
     }
 
     std::cout << "SHA256 verified.\n";
 
-    // 4. сохраняем и распаковываем во временную папку
+    // 4. Extract into a temporary directory.
+    fs::remove_all(tmpDir, ec);
+    ec.clear();
+
+    fs::create_directories(tmpDir, ec);
+
+    if (ec)
     {
-        std::ofstream out(zipPath, std::ios::binary | std::ios::trunc);
-
-        if (!out)
-        {
-            std::cout << "Cannot write " << zipPath.string() << "\n";
-            return false;
-        }
-
-        out.write(zipData.data(), static_cast<std::streamsize>(zipData.size()));
-
-        if (!out)
-        {
-            std::cout << "Cannot write " << zipPath.string() << "\n";
-            cleanup();
-            return false;
-        }
+        std::cout << "Cannot create temporary directory: "
+            << ec.message() << "\n";
+        cleanup();
+        return false;
     }
 
-    fs::remove_all(tmpDir, ec);
-    fs::create_directories(tmpDir, ec);
+#ifndef _WIN32
+    fs::permissions(
+        tmpDir,
+        fs::perms::owner_all,
+        fs::perm_options::replace,
+        ec);
+    ec.clear();
+#endif
 
     std::cout << "Extracting...\n";
 
     if (!extractZip(zipPath, tmpDir))
     {
-        std::cout << "Cannot extract archive.\n";
+        std::cout << "Cannot extract archive. "
+            "Check that unzip is installed on Linux.\n";
         cleanup();
         return false;
     }
 
-    // 5. ищем папку с index.html (в корне или в единственной подпапке)
+    // 5. Locate index.html in the archive root or one subdirectory.
     fs::path sourceRoot;
 
-    if (fs::exists(tmpDir / "index.html", ec))
+    if (fs::exists(tmpDir / "index.html", ec) && !ec)
     {
         sourceRoot = tmpDir;
     }
     else
     {
-        for (const auto& entry : fs::directory_iterator(tmpDir, ec))
+        ec.clear();
+
+        fs::directory_iterator it(tmpDir, ec);
+        fs::directory_iterator end;
+
+        for (; !ec && it != end; it.increment(ec))
         {
-            if (entry.is_directory(ec) &&
-                fs::exists(entry.path() / "index.html", ec))
+            std::error_code itemEc;
+
+            if (it->is_directory(itemEc) && !itemEc &&
+                fs::exists(it->path() / "index.html", itemEc) &&
+                !itemEc)
             {
-                sourceRoot = entry.path();
+                sourceRoot = it->path();
                 break;
             }
         }
@@ -607,30 +737,104 @@ bool installWebFiles()
         return false;
     }
 
-    // 6. заменяем старую версию новой
-    fs::remove_all(target, ec);
+    // 6. Install the verified website.
+    // Keep the temporary directory on the same filesystem as target
+    // where possible, so the rename can succeed.
+    fs::create_directories(target.parent_path(), ec);
+
+    if (ec)
+    {
+        std::cout << "Cannot create installation parent directory: "
+            << ec.message() << "\n";
+        cleanup();
+        return false;
+    }
+
+    const fs::path backup = baseDir / "web_previous";
+
+    fs::remove_all(backup, ec);
+    ec.clear();
+
+    const bool hadOldWeb = fs::exists(target, ec) && !ec;
+
+    if (hadOldWeb)
+    {
+        fs::rename(target, backup, ec);
+
+        if (ec)
+        {
+            std::cout << "Cannot move existing web directory: "
+                << ec.message() << "\n";
+            cleanup();
+            return false;
+        }
+    }
 
     fs::rename(sourceRoot, target, ec);
 
     if (ec)
     {
-        std::cout << "Cannot install web files: " << ec.message() << "\n";
+        std::cout << "Cannot install web files: "
+            << ec.message() << "\n";
+
+        if (hadOldWeb)
+        {
+            std::error_code restoreEc;
+            fs::rename(backup, target, restoreEc);
+
+            if (restoreEc)
+            {
+                std::cout << "WARNING: automatic restore failed: "
+                    << restoreEc.message() << "\n";
+                std::cout << "Previous files remain at: "
+                    << backup.string() << "\n";
+            }
+        }
+
         cleanup();
         return false;
     }
 
-    cleanup();
+#ifndef _WIN32
+    // Website assets are readable by the user running ServerGuard.
+    // Preserve executable bits from the archive where present.
+    fs::permissions(
+        target,
+        fs::perms::owner_all,
+        fs::perm_options::replace,
+        ec);
+    ec.clear();
+#endif
 
+    fs::remove_all(backup, ec);
+    ec.clear();
+
+    // Record the verified archive hash.
     {
         std::ofstream shaOut(shaFilePath(), std::ios::trunc);
-        shaOut << webSha << '\n';
+
+        if (!shaOut)
+        {
+            std::cout << "WARNING: website installed, but cannot write "
+                << shaFilePath().string() << "\n";
+        }
+        else
+        {
+            shaOut << webSha << '\n';
+        }
     }
 
-    std::cout << "Web installed to: " << target.string() << "\n";
+    cleanup();
+
+    std::cout << "Web installed to: "
+        << target.string() << "\n";
 
     return true;
 }
 
+// ============================================================
+// REMOVE WEBSITE
+// ============================================================
 
 bool removeWebFiles()
 {
@@ -640,19 +844,31 @@ bool removeWebFiles()
 
     if (ec)
     {
-        std::cout << "Cannot remove web files: " << ec.message() << "\n";
+        std::cout << "Cannot remove web files: "
+            << ec.message() << "\n";
         return false;
     }
 
+    ec.clear();
     fs::remove(shaFilePath(), ec);
+
+    if (ec)
+    {
+        std::cout << "Cannot remove SHA256 file: "
+            << ec.message() << "\n";
+        return false;
+    }
 
     return true;
 }
 
+// ============================================================
+// web COMMAND
+// ============================================================
 
-// ===================== КОМАНДА web =====================
-
-void handleWebCommand(const std::string& arg, WebServer* webServer)
+void handleWebCommand(
+    const std::string& arg,
+    WebServer* webServer)
 {
     if (!webServer)
     {
@@ -669,21 +885,20 @@ void handleWebCommand(const std::string& arg, WebServer* webServer)
         {
             if (webServer->start())
             {
-                std::cout << "Open: " << webServer->accessUrl() << "\n";
+                std::cout << "Open: "
+                    << webServer->accessUrl() << "\n";
             }
             else
             {
                 std::cout
                     << "Web files installed, "
-                    "but the server failed to start.\n";
+                    << "but the server failed to start.\n";
             }
         }
         else
         {
-            std::cout
-                << "Web server is running: "
-                << webServer->accessUrl()
-                << "\n";
+            std::cout << "Web server is running: "
+                << webServer->accessUrl() << "\n";
         }
 
         return;
@@ -693,13 +908,15 @@ void handleWebCommand(const std::string& arg, WebServer* webServer)
     {
         std::error_code ec;
 
-        bool installed =
-            fs::exists(fs::path(webRootPath()) / "index.html", ec);
+        const bool installed =
+            fs::exists(fs::path(webRootPath()) / "index.html", ec) &&
+            !ec;
 
-        std::string sha = installedSha();
+        const std::string sha = installedSha();
 
         std::cout << "Web root:  " << webRootPath() << "\n";
-        std::cout << "Installed: " << (installed ? "yes" : "no") << "\n";
+        std::cout << "Installed: "
+            << (installed ? "yes" : "no") << "\n";
 
         if (installed && !sha.empty())
             std::cout << "SHA256:    " << sha << "\n";
@@ -720,7 +937,7 @@ void handleWebCommand(const std::string& arg, WebServer* webServer)
         {
             std::cout
                 << "Web server is not running. "
-                "Type 'web install'.\n";
+                << "Type 'web install'.\n";
         }
 
         return;

@@ -16,17 +16,10 @@
 #include <thread>
 #include <vector>
 
-#include <winsock2.h>
-#include <windows.h>
-#include <wininet.h>
-#include <urlmon.h>
-
 #include <openssl/evp.h>
 
+#include "Platform.h"
 #include "config.h"
-
-#pragma comment(lib, "urlmon.lib")
-#pragma comment(lib, "wininet.lib")
 
 static const std::string SECURITY_DIR = "/opt/serverguard";
 static const std::string SECURITY_DATA_DIR = "/opt/serverguard/data";
@@ -45,7 +38,7 @@ static const std::string SECURITY_SIGNATURE_URL = ServerGuardConfig::SECURITY_SI
 
 static const int SECURITY_BACKUP_KEEP = 5;
 
-// ---- Signed module verification (done on Windows, like FirewallManager) ----
+// ---- Signed module verification (done locally, like FirewallManager) ----
 
 static const size_t SECURITY_MAX_MANIFEST_SIZE = 64 * 1024;
 static const size_t SECURITY_MAX_SIGNATURE_SIZE = 64;
@@ -288,17 +281,12 @@ static std::string securityJsonEscape(const std::string& value)
 
 // ---- Download / signature helpers ----
 
+// Platform-specific download lives in Platform.h (plat::downloadFile):
+//   Windows: URLDownloadToFileA (+ cache entry removal)
+//   Linux:   curl (fork/execvp, no shell)
 static bool downloadToFile(const std::string& url, const std::string& path)
 {
-    // Drop any cached copy so we never mix a stale manifest with a new script.
-    DeleteUrlCacheEntryA(url.c_str());
-
-    return URLDownloadToFileA(
-        nullptr,
-        url.c_str(),
-        path.c_str(),
-        0,
-        nullptr) == S_OK;
+    return plat::downloadFile(url, path, SECURITY_MAX_SCRIPT_SIZE);
 }
 
 static bool readBinaryFile(const std::string& path, std::string& data, size_t maxSize)
@@ -2008,38 +1996,25 @@ bool Security::verifyScriptFile(const std::string& path, bool runSelfTest)
     return true;
 }
 
-// Downloads brute_force_guard.py + manifest.json + manifest.sig on Windows,
-// verifies Ed25519 signature and SHA-256 locally (OpenSSL), then uploads the
-// verified script to SECURITY_TEMP_SCRIPT on the server.
-// The server never downloads anything and never runs unverified code.
-// Downloads brute_force_guard.py + manifest.json + manifest.sig on Windows,
-// verifies Ed25519 signature and SHA-256 locally (OpenSSL), then uploads the
-// verified script to SECURITY_TEMP_SCRIPT on the server.
-// The server never downloads anything and never runs unverified code.
+// Downloads brute_force_guard.py + manifest.json + manifest.sig on the LOCAL
+// machine (Windows or Linux), verifies Ed25519 signature and SHA-256 locally
+// (OpenSSL), then uploads the verified script to SECURITY_TEMP_SCRIPT on the
+// server. The server never downloads anything and never runs unverified code.
 bool Security::downloadScriptToTemp()
 {
-    char tempDirectory[MAX_PATH] = {};
-    char manifestPath[MAX_PATH] = {};
-    char signaturePath[MAX_PATH] = {};
-    char scriptPath[MAX_PATH] = {};
+    // Temp files are created through Platform.h (GetTempFileName / mkstemp).
+    std::string manifestPath = plat::makeTempFile("sgm");
+    std::string signaturePath = plat::makeTempFile("sgs");
+    std::string scriptPath = plat::makeTempFile("sgp");
 
     const auto cleanup = [&]()
         {
-            if (manifestPath[0]) DeleteFileA(manifestPath);
-            if (signaturePath[0]) DeleteFileA(signaturePath);
-            if (scriptPath[0]) DeleteFileA(scriptPath);
+            if (!manifestPath.empty()) plat::removeFile(manifestPath);
+            if (!signaturePath.empty()) plat::removeFile(signaturePath);
+            if (!scriptPath.empty()) plat::removeFile(scriptPath);
         };
 
-    if (!GetTempPathA(MAX_PATH, tempDirectory))
-    {
-        setError("Cannot determine Windows temp directory.");
-        std::cout << "[ERROR] " << lastError << "\n";
-        return false;
-    }
-
-    if (!GetTempFileNameA(tempDirectory, "sgm", 0, manifestPath) ||
-        !GetTempFileNameA(tempDirectory, "sgs", 0, signaturePath) ||
-        !GetTempFileNameA(tempDirectory, "sgp", 0, scriptPath))
+    if (manifestPath.empty() || signaturePath.empty() || scriptPath.empty())
     {
         setError("Cannot create temporary files.");
         std::cout << "[ERROR] " << lastError << "\n";
@@ -2054,24 +2029,25 @@ bool Security::downloadScriptToTemp()
     {
         const char* label;
         const std::string* url;
-        const char* path;
+        const std::string* path;
     };
 
     const DownloadItem items[] = {
-        { "manifest.json", &SECURITY_MANIFEST_URL,  manifestPath },
-        { "manifest.sig",  &SECURITY_SIGNATURE_URL, signaturePath },
-        { "script",        &SECURITY_UPDATE_URL,    scriptPath },
+        { "manifest.json", &SECURITY_MANIFEST_URL,  &manifestPath },
+        { "manifest.sig",  &SECURITY_SIGNATURE_URL, &signaturePath },
+        { "script",        &SECURITY_UPDATE_URL,    &scriptPath },
     };
 
     for (const DownloadItem& item : items)
     {
-        if (!downloadToFile(*item.url, item.path))
+        if (!downloadToFile(*item.url, *item.path))
         {
             setError(std::string("Download failed (") + item.label + "): " + *item.url);
 
             std::cout << "[ERROR] Download failed (" << item.label << "):\n"
                 << "        " << *item.url << "\n"
                 << "        Check that the file exists at this URL (open it in a browser).\n"
+                << "        On Linux the 'curl' command must be installed locally.\n"
                 << "        Installation cancelled.\n";
 
             cleanup();
@@ -2214,6 +2190,7 @@ bool Security::downloadScriptToTemp()
 
     return true;
 }
+
 bool Security::backupCurrentSecurityScript()
 {
     std::string output;
@@ -2934,18 +2911,11 @@ void Security::menu()
 
         if (choice == "6")
         {
-            std::cout << "\nInstalling / updating SSH Hardening module...\n";
+            // FIX: the original code called webInstall() here (a re-install),
+            // although the menu item says "Show logs".
+            std::cout << "\n----------------------------------------\n ServerGuard Security Logs\n----------------------------------------\n";
 
-            const bool installed = webInstall();
-
-            if (installed)
-            {
-                std::cout << "\nSSH Hardening module installed successfully.\n";
-            }
-            else
-            {
-                std::cout << "\nSSH Hardening installation failed.\n";
-            }
+            printOutput(webLogs());
 
             continue;
         }

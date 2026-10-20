@@ -1,4 +1,5 @@
-#define NOMINMAX
+// ServerGuard main.cpp - cross-platform (Windows + Linux)
+// All OS-specific code is in Platform.h (namespace plat).
 
 #include <iostream>
 #include <iomanip>
@@ -13,10 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <wincrypt.h>
-#include <shellapi.h>
+#include "Platform.h"   // must come before anything that needs sockets
 
 #include <libssh2.h>
 
@@ -30,12 +28,6 @@
 #include "Web.h"
 #include "Nano.h"
 #include "Firewall.h"
-
-#pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "crypt32.lib")
-#pragma comment(lib, "shell32.lib")
-
-
 
 
 enum class AuthMethod
@@ -94,14 +86,14 @@ static int authMethodNumber(AuthMethod m)
 
 struct Config
 {
-    std::string name;           // display name in the server list
+    std::string name;
 
     std::string host;
     int port = 22;
     std::string username;
 
     std::string password;       // login / sudo password (memory)
-    bool savePassword = false;  // store password (DPAPI-encrypted)
+    bool savePassword = false;  // store password (encrypted)
 
     AuthMethod auth = AuthMethod::Password;
 
@@ -110,13 +102,7 @@ struct Config
 };
 
 
-// ============================================================
-//  Update request flag
-//  Set by the 'update' terminal command. The installer is
-//  launched from main() after the session has been closed and
-//  all resources have been released.
-// ============================================================
-
+// Set by the 'update' terminal command; main() runs the updater at the end.
 static bool g_updateRequested = false;
 
 
@@ -148,6 +134,7 @@ static std::string toLower(std::string s)
 static std::string readLine(const std::string& prompt, const std::string& def = "")
 {
     std::cout << prompt;
+    std::cout.flush();
 
     std::string line;
 
@@ -161,52 +148,12 @@ static std::string readLine(const std::string& prompt, const std::string& def = 
     return line.empty() ? def : line;
 }
 
-static std::string readSecret(const std::string& prompt)
-{
-    std::cout << prompt;
-
-    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
-
-    DWORD mode = 0;
-
-    bool hidden = (GetConsoleMode(hIn, &mode) != 0);
-
-    if (hidden)
-    {
-        SetConsoleMode(hIn, mode & ~ENABLE_ECHO_INPUT);
-    }
-
-    std::string line;
-    std::getline(std::cin, line);
-
-    if (hidden)
-    {
-        SetConsoleMode(hIn, mode);
-    }
-
-    std::cout << "\n";
-
-    while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
-    {
-        line.pop_back();
-    }
-
-    return line;
-}
-
 static bool askYesNo(const std::string& prompt, bool def)
 {
     std::string a =
         toLower(readLine(prompt + (def ? " (Y/n): " : " (y/N): "), def ? "y" : "n"));
 
     return a == "y" || a == "yes" || a == "д" || a == "да";
-}
-
-static bool fileExists(const std::string& path)
-{
-    std::ifstream f(path, std::ios::binary);
-
-    return f.good();
 }
 
 static std::string stripQuotes(std::string s)
@@ -223,23 +170,20 @@ static std::string stripQuotes(std::string s)
 
 static std::string defaultKeyPath()
 {
-    char* home = nullptr;
-    size_t len = 0;
+    std::string home = plat::homeDir();
 
-    if (_dupenv_s(&home, &len, "USERPROFILE") != 0 || !home)
+    if (home.empty())
     {
         return "";
     }
 
-    std::string base = std::string(home) + "\\.ssh\\";
-
-    free(home);
+    std::string base = home + plat::PATH_SEP + ".ssh" + plat::PATH_SEP;
 
     const char* names[] = { "id_ed25519", "id_rsa", "id_ecdsa" };
 
     for (const char* name : names)
     {
-        if (fileExists(base + name))
+        if (plat::fileExists(base + name))
         {
             return base + name;
         }
@@ -250,111 +194,53 @@ static std::string defaultKeyPath()
 
 static std::string toHex(const unsigned char* data, size_t len)
 {
-    static const char* digits = "0123456789abcdef";
-
-    std::string out;
-
-    for (size_t i = 0; i < len; i++)
-    {
-        out += digits[data[i] >> 4];
-        out += digits[data[i] & 0x0F];
-    }
-
-    return out;
-}
-
-static bool fromHex(const std::string& hex, std::string& out)
-{
-    out.clear();
-
-    if (hex.size() % 2 != 0)
-        return false;
-
-    auto val = [](char c) -> int
-        {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-            return -1;
-        };
-
-    for (size_t i = 0; i < hex.size(); i += 2)
-    {
-        int hi = val(hex[i]);
-        int lo = val(hex[i + 1]);
-
-        if (hi < 0 || lo < 0)
-            return false;
-
-        out += static_cast<char>((hi << 4) | lo);
-    }
-
-    return true;
+    return plat::hexEncode(data, len);
 }
 
 
 // ============================================================
-//  Updater: launches SetupServerGuard.exe next to ServerGuard.exe
+//  Updater
+//   Windows: SetupServerGuard.exe
+//   Linux:   update-serverguard.sh (run with /bin/sh)
 // ============================================================
 
-static std::string exeDirectory()
-{
-    char path[MAX_PATH] = {};
-    DWORD n = GetModuleFileNameA(nullptr, path, MAX_PATH);
-
-    if (n == 0 || n >= MAX_PATH)
-        return "";
-
-    std::string full(path, n);
-    size_t slash = full.find_last_of("\\/");
-
-    return slash == std::string::npos ? "" : full.substr(0, slash);
-}
-
-static std::string getEnvVar(const char* name)
-{
-    char* value = nullptr;
-    size_t len = 0;
-
-    if (_dupenv_s(&value, &len, name) != 0 || !value)
-        return "";
-
-    std::string result = value;
-
-    free(value);
-
-    return result;
-}
+#ifdef _WIN32
+static const char* UPDATER_NAME = "SetupServerGuard.exe";
+#else
+static const char* UPDATER_NAME = "update-serverguard.sh";
+#endif
 
 static bool runUpdater()
 {
-    // Search order:
-    //   1. next to the running ServerGuard.exe
-    //   2. the installed copy: C:\Program Files\ServerGuard
-    //   3. C:\Program Files (x86)\ServerGuard
     std::vector<std::string> candidates;
 
-    std::string exeDir = exeDirectory();
+    std::string exeDir = plat::exeDirectory();
 
     if (!exeDir.empty())
         candidates.push_back(exeDir);
 
-    std::string pf64 = getEnvVar("ProgramW6432");
-    std::string pf = getEnvVar("ProgramFiles");
-    std::string pf86 = getEnvVar("ProgramFiles(x86)");
+#ifdef _WIN32
+    std::string pf64 = plat::getEnv("ProgramW6432");
+    std::string pf = plat::getEnv("ProgramFiles");
+    std::string pf86 = plat::getEnv("ProgramFiles(x86)");
 
     if (!pf64.empty()) candidates.push_back(pf64 + "\\ServerGuard");
     if (!pf.empty())   candidates.push_back(pf + "\\ServerGuard");
     if (!pf86.empty()) candidates.push_back(pf86 + "\\ServerGuard");
+#else
+    candidates.push_back("/opt/serverguard");
+    candidates.push_back("/usr/local/share/serverguard");
+    candidates.push_back("/usr/share/serverguard");
+#endif
 
     std::string dir;
     std::string setup;
 
     for (const std::string& candidate : candidates)
     {
-        std::string path = candidate + "\\SetupServerGuard.exe";
+        std::string path = plat::joinPath(candidate, UPDATER_NAME);
 
-        if (fileExists(path))
+        if (plat::fileExists(path))
         {
             dir = candidate;
             setup = path;
@@ -364,93 +250,24 @@ static bool runUpdater()
 
     if (setup.empty())
     {
-        std::cout << "SetupServerGuard.exe not found. Searched:\n";
+        std::cout << UPDATER_NAME << " not found. Searched:\n";
 
         for (const std::string& candidate : candidates)
-            std::cout << "  " << candidate << "\\SetupServerGuard.exe\n";
+            std::cout << "  " << plat::joinPath(candidate, UPDATER_NAME) << "\n";
 
         return false;
     }
 
     std::cout << "Launching " << setup << " ...\n";
 
-    HINSTANCE rc = ShellExecuteA(
-        nullptr,
-        "open",
-        setup.c_str(),
-        nullptr,
-        dir.c_str(),
-        SW_SHOWNORMAL
-    );
-
-    if (reinterpret_cast<INT_PTR>(rc) <= 32)
+    if (!plat::launchUpdater(setup, dir))
     {
-        std::cout << "Failed to launch the installer (code "
-            << reinterpret_cast<INT_PTR>(rc) << ").\n";
+        std::cout << "Failed to launch the updater.\n";
         return false;
     }
 
-    std::cout << "Installer started.\n";
+    std::cout << "Updater started.\n";
     return true;
-}
-
-
-// ============================================================
-//  Password protection (Windows DPAPI: bound to current user)
-// ============================================================
-
-static std::string protectSecret(const std::string& plain)
-{
-    if (plain.empty())
-        return "";
-
-    DATA_BLOB in;
-    in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plain.data()));
-    in.cbData = static_cast<DWORD>(plain.size());
-
-    DATA_BLOB out{};
-
-    if (!CryptProtectData(&in, L"ServerGuard", nullptr, nullptr,
-        nullptr, 0, &out))
-    {
-        return "";
-    }
-
-    std::string hex = toHex(out.pbData, out.cbData);
-
-    LocalFree(out.pbData);
-
-    return hex;
-}
-
-static std::string unprotectSecret(const std::string& hex)
-{
-    if (hex.empty())
-        return "";
-
-    std::string raw;
-
-    if (!fromHex(hex, raw) || raw.empty())
-        return "";
-
-    DATA_BLOB in;
-    in.pbData = reinterpret_cast<BYTE*>(raw.data());
-    in.cbData = static_cast<DWORD>(raw.size());
-
-    DATA_BLOB out{};
-
-    if (!CryptUnprotectData(&in, nullptr, nullptr, nullptr,
-        nullptr, 0, &out))
-    {
-        return "";
-    }
-
-    std::string plain(reinterpret_cast<char*>(out.pbData), out.cbData);
-
-    SecureZeroMemory(out.pbData, out.cbData);
-    LocalFree(out.pbData);
-
-    return plain;
 }
 
 
@@ -458,46 +275,9 @@ static std::string unprotectSecret(const std::string& hex)
 //  Profile storage (servers.cfg, tab separated)
 // ============================================================
 
-// Data folder: C:\Users\<user>\AppData\Local\ServerGuard
-// Created automatically if it does not exist.
-static std::string appDataDir()
-{
-    static std::string dir;
+static const std::string PROFILES_FILE =
+plat::joinPath(plat::appDataDir(), "servers.cfg");
 
-    if (!dir.empty())
-        return dir;
-
-    char* base = nullptr;
-    size_t len = 0;
-
-    if (_dupenv_s(&base, &len, "LOCALAPPDATA") != 0 || !base || !*base)
-    {
-        if (base)
-            free(base);
-
-        // Fallback: current working directory
-        dir = ".";
-        return dir;
-    }
-
-    dir = std::string(base) + "\\ServerGuard";
-
-    free(base);
-
-    if (!CreateDirectoryA(dir.c_str(), nullptr) &&
-        GetLastError() != ERROR_ALREADY_EXISTS)
-    {
-        std::cout << "Warning: cannot create folder " << dir
-            << " (Windows error " << GetLastError() << "). "
-            "Using current folder.\n";
-
-        dir = ".";
-    }
-
-    return dir;
-}
-
-static const std::string PROFILES_FILE = appDataDir() + "\\servers.cfg";
 static const char* LEGACY_FILE = "server.cfg";
 
 static std::string cleanField(std::string s)
@@ -513,22 +293,26 @@ static std::string cleanField(std::string s)
 
 static bool saveProfiles(const std::vector<Config>& list)
 {
-    std::ofstream file(PROFILES_FILE, std::ios::trunc);
-
-    if (!file.is_open())
-        return false;
-
-    for (const Config& c : list)
     {
-        file << cleanField(c.name) << '\t'
-            << cleanField(c.host) << '\t'
-            << c.port << '\t'
-            << cleanField(c.username) << '\t'
-            << authMethodToString(c.auth) << '\t'
-            << cleanField(c.keyPath) << '\t'
-            << (c.savePassword ? protectSecret(c.password) : "")
-            << '\n';
+        std::ofstream file(PROFILES_FILE, std::ios::trunc);
+
+        if (!file.is_open())
+            return false;
+
+        for (const Config& c : list)
+        {
+            file << cleanField(c.name) << '\t'
+                << cleanField(c.host) << '\t'
+                << c.port << '\t'
+                << cleanField(c.username) << '\t'
+                << authMethodToString(c.auth) << '\t'
+                << cleanField(c.keyPath) << '\t'
+                << (c.savePassword ? plat::protectSecret(c.password) : "")
+                << '\n';
+        }
     }
+
+    plat::restrictFile(PROFILES_FILE);   // chmod 600 on Linux
 
     return true;
 }
@@ -582,7 +366,7 @@ static std::vector<Config> loadProfiles()
 
         if (f.size() >= 7 && !f[6].empty())
         {
-            c.password = unprotectSecret(f[6]);
+            c.password = plat::unprotectSecret(f[6]);
             c.savePassword = !c.password.empty();
         }
 
@@ -598,7 +382,7 @@ static std::vector<Config> loadProfiles()
 // Import of the old single-server file (server.cfg)
 static void migrateLegacyConfig()
 {
-    if (fileExists(PROFILES_FILE) || !fileExists(LEGACY_FILE))
+    if (plat::fileExists(PROFILES_FILE) || !plat::fileExists(LEGACY_FILE))
         return;
 
     std::ifstream file(LEGACY_FILE);
@@ -649,19 +433,22 @@ static void migrateLegacyConfig()
         "no longer need it.\n\n";
 }
 
-// Creates an empty servers.cfg on first launch if it does not exist
 static void ensureProfilesFile()
 {
-    if (fileExists(PROFILES_FILE))
+    if (plat::fileExists(PROFILES_FILE))
         return;
 
-    std::ofstream file(PROFILES_FILE, std::ios::app);
-
-    if (!file.is_open())
     {
-        std::cout << "Warning: cannot create " << PROFILES_FILE << "\n";
-        return;
+        std::ofstream file(PROFILES_FILE, std::ios::app);
+
+        if (!file.is_open())
+        {
+            std::cout << "Warning: cannot create " << PROFILES_FILE << "\n";
+            return;
+        }
     }
+
+    plat::restrictFile(PROFILES_FILE);
 
     std::cout << "Config file created: " << PROFILES_FILE << "\n";
 }
@@ -681,7 +468,6 @@ static bool editProfile(Config& cfg, bool isNew)
 
     std::string oldHost = cfg.host;
 
-    // host
     while (true)
     {
         cfg.host = readLine(
@@ -698,7 +484,6 @@ static bool editProfile(Config& cfg, bool isNew)
             return false;
     }
 
-    // port
     {
         std::string def = std::to_string(cfg.port);
         std::string input = readLine("SSH port [" + def + "]: ", def);
@@ -717,7 +502,6 @@ static bool editProfile(Config& cfg, bool isNew)
         }
     }
 
-    // username
     while (true)
     {
         cfg.username = readLine(
@@ -734,11 +518,14 @@ static bool editProfile(Config& cfg, bool isNew)
             return false;
     }
 
-    // auth method
     std::cout << "\nAuthentication method:\n";
     std::cout << "1. Password\n";
     std::cout << "2. Private key file (id_ed25519 / id_rsa / .pem)\n";
+#ifdef _WIN32
     std::cout << "3. SSH agent (Pageant / Windows OpenSSH agent)\n";
+#else
+    std::cout << "3. SSH agent (ssh-agent via SSH_AUTH_SOCK)\n";
+#endif
     std::cout << "4. Keyboard-interactive (PAM / 2FA)\n\n";
 
     {
@@ -769,7 +556,7 @@ static bool editProfile(Config& cfg, bool isNew)
     case AuthMethod::Interactive:
 
         cfg.keyPath.clear();
-        cfg.password = readSecret("Password (Enter = ask on every connect): ");
+        cfg.password = plat::readSecret("Password (Enter = ask on every connect): ");
         break;
 
     case AuthMethod::PublicKey:
@@ -785,7 +572,7 @@ static bool editProfile(Config& cfg, bool isNew)
 
         cfg.keyPath = stripQuotes(readLine(prompt, def));
 
-        cfg.password = readSecret(
+        cfg.password = plat::readSecret(
             "Sudo password for server modules "
             "(Enter = ask on every connect): ");
 
@@ -795,7 +582,7 @@ static bool editProfile(Config& cfg, bool isNew)
     case AuthMethod::Agent:
 
         cfg.keyPath.clear();
-        cfg.password = readSecret(
+        cfg.password = plat::readSecret(
             "Sudo password for server modules "
             "(Enter = ask on every connect): ");
         break;
@@ -805,12 +592,17 @@ static bool editProfile(Config& cfg, bool isNew)
 
     if (!cfg.password.empty())
     {
+#ifdef _WIN32
         cfg.savePassword = askYesNo(
             "Save password on this PC (encrypted with Windows DPAPI)?",
             false);
+#else
+        cfg.savePassword = askYesNo(
+            "Save password on this PC (encrypted with a local key file)?",
+            false);
+#endif
     }
 
-    // display name
     {
         std::string def = cfg.name;
 
@@ -836,7 +628,6 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
         return false;
     }
 
-    // SHA-256 fingerprint of the server host key.
     const char* raw =
         libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
 
@@ -846,7 +637,6 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
             << "[SSH] SECURITY ERROR: Cannot calculate server fingerprint.\n"
             << "[SSH] Connection rejected.\n";
 
-        // Fail closed: never trust a host whose key could not be checked.
         return false;
     }
 
@@ -857,13 +647,12 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
     const std::string id =
         cfg.host + ":" + std::to_string(cfg.port);
 
-    const std::string fileName = appDataDir() + "\\known_hosts.txt";
+    const std::string fileName = plat::joinPath(plat::appDataDir(), "known_hosts.txt");
 
     std::vector<std::string> lines;
     std::string storedFingerprint;
     bool found = false;
 
-    // Read the trusted host keys.
     {
         std::ifstream in(fileName);
 
@@ -883,8 +672,6 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
                 if (space != std::string::npos &&
                     line.substr(0, space) == id)
                 {
-                    // If duplicate entries exist, do not silently
-                    // choose one: treat conflicting entries as an error.
                     const std::string value = trim(line.substr(space + 1));
 
                     if (found && storedFingerprint != value)
@@ -904,28 +691,14 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
                 lines.push_back(line);
             }
         }
-        else
-        {
-            // A missing file is acceptable for a first connection.
-            // Other filesystem errors will be caught when saving.
-            std::ifstream check(fileName);
-
-            if (check.bad())
-            {
-                std::cout << "[SSH] Cannot inspect known_hosts file.\n";
-                return false;
-            }
-        }
     }
 
-    // A previously trusted key matches.
     if (found && storedFingerprint == fingerprint)
     {
         std::cout << "[SSH] Host key verified.\n";
         return true;
     }
 
-    // First connection or changed host key.
     if (found)
     {
         std::cout
@@ -966,7 +739,6 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
         return false;
     }
 
-    // Build a replacement file in memory first.
     std::vector<std::string> updated;
     bool inserted = false;
 
@@ -985,7 +757,6 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
                 updated.push_back(id + " " + fingerprint);
                 inserted = true;
             }
-            // Remove duplicate entries for this exact host.
         }
         else
         {
@@ -996,7 +767,6 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
     if (!inserted)
         updated.push_back(id + " " + fingerprint);
 
-    // Do not claim success if the trusted key cannot be saved.
     const std::string tempFile = fileName + ".tmp";
 
     {
@@ -1023,15 +793,11 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
         }
     }
 
-    // Replace the old file only after the temporary file is complete.
-    if (!MoveFileExA(
-        tempFile.c_str(),
-        fileName.c_str(),
-        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+    if (!plat::replaceFile(tempFile, fileName))
     {
         std::cout
-            << "[SSH] ERROR: Cannot replace known_hosts file. Windows error: "
-            << GetLastError() << "\n";
+            << "[SSH] ERROR: Cannot replace known_hosts file. System error: "
+            << plat::lastSystemError() << "\n";
 
         std::remove(tempFile.c_str());
         return false;
@@ -1040,7 +806,6 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
     std::cout << "[SSH] Host key saved successfully.\n";
     return true;
 }
-
 
 
 // ============================================================
@@ -1105,10 +870,10 @@ static void kbdCallback(
             if (prompts[i].echo)
                 answer = readLine(prompt);
             else
-                answer = readSecret(prompt);
+                answer = plat::readSecret(prompt);
         }
 
-        responses[i].text = _strdup(answer.c_str());
+        responses[i].text = plat::cstrdup(answer.c_str());
 
         responses[i].length =
             static_cast<unsigned int>(answer.size());
@@ -1178,7 +943,7 @@ static bool authPublicKey(LIBSSH2_SESSION* session, const Config& cfg)
         return false;
     }
 
-    if (!fileExists(cfg.keyPath))
+    if (!plat::fileExists(cfg.keyPath))
     {
         std::cout
             << "Private key file not found:\n"
@@ -1191,7 +956,7 @@ static bool authPublicKey(LIBSSH2_SESSION* session, const Config& cfg)
     std::string pubPath = cfg.keyPath + ".pub";
 
     const char* pub =
-        fileExists(pubPath) ? pubPath.c_str() : nullptr;
+        plat::fileExists(pubPath) ? pubPath.c_str() : nullptr;
 
     int rc =
         libssh2_userauth_publickey_fromfile(
@@ -1241,9 +1006,16 @@ static bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)
 
     if (libssh2_agent_connect(agent) != 0)
     {
+#ifdef _WIN32
         std::cout
             << "Cannot connect to SSH agent. Start Pageant or the "
             "'OpenSSH Authentication Agent' service.\n";
+#else
+        std::cout
+            << "Cannot connect to SSH agent. Start it with:\n"
+            "  eval \"$(ssh-agent -s)\" && ssh-add\n"
+            "and make sure SSH_AUTH_SOCK is set.\n";
+#endif
 
         libssh2_agent_free(agent);
 
@@ -1479,7 +1251,7 @@ bool openConnection(
     sin.sin_family = AF_INET;
 
     sin.sin_port =
-        htons(static_cast<u_short>(cfg.port));
+        htons(static_cast<unsigned short>(cfg.port));
 
     if (inet_pton(AF_INET, cfg.host.c_str(), &sin.sin_addr) <= 0)
     {
@@ -1503,7 +1275,7 @@ bool openConnection(
         sizeof(sin)) != 0)
     {
         std::cout
-            << "Connection failed (WSA error "
+            << "Connection failed (network error "
             << WSAGetLastError()
             << ").\n";
 
@@ -1765,7 +1537,8 @@ void runServerTerminal(
     std::cout << "Type 'ports' to manage firewall ports (open/close/block).\n";
     std::cout << "Type 'web install' to install the web interface.\n";
     std::cout << "Type 'web status | web url | web remove' to manage it.\n";
-    std::cout << "Type 'update' to close ServerGuard and run the installer (SetupServerGuard.exe).\n";
+    std::cout << "Type 'update' to close ServerGuard and run the updater ("
+        << UPDATER_NAME << ").\n";
     std::cout << "Type 'exit' to disconnect and return to the server list.\n";
     std::cout << "\n";
     std::cout << "Type 'help' for detailed information.\n";
@@ -1782,6 +1555,7 @@ void runServerTerminal(
             << ":"
             << currentDirectory
             << "$ ";
+        std::cout.flush();
 
         std::string command;
 
@@ -1812,8 +1586,6 @@ void runServerTerminal(
                 continue;
             }
 
-            // update: close the session cleanly, then main() launches
-            // SetupServerGuard.exe once everything has been released.
             {
                 std::string lc = toLower(command);
 
@@ -2120,7 +1892,6 @@ static FailAction askFailAction(const Config& cfg)
     }
 }
 
-// Ask for secrets that are not stored in the profile
 static void ensureSecrets(Config& cfg)
 {
     switch (cfg.auth)
@@ -2129,23 +1900,23 @@ static void ensureSecrets(Config& cfg)
     case AuthMethod::Interactive:
 
         if (cfg.password.empty())
-            cfg.password = readSecret("Password for " + cfg.username + ": ");
+            cfg.password = plat::readSecret("Password for " + cfg.username + ": ");
         break;
 
     case AuthMethod::PublicKey:
 
         if (cfg.passphrase.empty())
-            cfg.passphrase = readSecret("Key passphrase (Enter if none): ");
+            cfg.passphrase = plat::readSecret("Key passphrase (Enter if none): ");
 
         if (cfg.password.empty())
-            cfg.password = readSecret(
+            cfg.password = plat::readSecret(
                 "Sudo password for server modules (Enter to skip): ");
         break;
 
     case AuthMethod::Agent:
 
         if (cfg.password.empty())
-            cfg.password = readSecret(
+            cfg.password = plat::readSecret(
                 "Sudo password for server modules (Enter to skip): ");
         break;
     }
@@ -2190,7 +1961,6 @@ static void connectToServer(std::vector<Config>& all, size_t index)
         {
             runSession(cfg, sock, session);
 
-            // do not keep secrets in memory after the session
             if (!cfg.savePassword)
                 cfg.password.clear();
 
@@ -2201,7 +1971,6 @@ static void connectToServer(std::vector<Config>& all, size_t index)
 
         FailAction action = askFailAction(cfg);
 
-        // forget wrong secrets so they are asked again
         cfg.passphrase.clear();
 
         if (!cfg.savePassword || action == FailAction::Retry)
@@ -2304,7 +2073,6 @@ static void serverMenu()
 
         if (!std::cin.good())
         {
-            // input stream closed - leave quietly
             std::cin.clear();
             return;
         }
@@ -2410,8 +2178,6 @@ static void serverMenu()
                 std::cout << "\nUnknown error.\n";
             }
 
-            // 'update' was requested inside the session:
-            // leave the menu so main() can launch the installer.
             if (g_updateRequested)
                 return;
 
@@ -2433,11 +2199,9 @@ int main()
     std::cout << "        ServerGuard\n";
     std::cout << "=============================\n";
 
-    WSADATA wsadata;
-
-    if (WSAStartup(MAKEWORD(2, 2), &wsadata) != 0)
+    if (!plat::initNetwork())
     {
-        std::cout << "WSAStartup failed.\n";
+        std::cout << "Network initialization failed.\n";
 
         return 1;
     }
@@ -2446,16 +2210,15 @@ int main()
     {
         std::cout << "libssh2 initialization failed.\n";
 
-        WSACleanup();
+        plat::cleanupNetwork();
 
         return 1;
     }
 
-
     try
     {
         migrateLegacyConfig();
-        ensureProfilesFile();   // creates empty servers.cfg if missing
+        ensureProfilesFile();
 
         serverMenu();
     }
@@ -2472,10 +2235,9 @@ int main()
 
     libssh2_exit();
 
-    WSACleanup();
+    plat::cleanupNetwork();
 
-    // Launch the installer only after the SSH session is closed and
-    // all resources are released, so ServerGuard.exe is not busy.
+    // On Linux runUpdater() replaces this process with the updater script.
     if (g_updateRequested)
     {
         if (!runUpdater())

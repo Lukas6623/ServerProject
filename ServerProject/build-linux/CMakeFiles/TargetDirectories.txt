@@ -1,0 +1,3 @@
+/mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles/ServerGuard.dir
+/mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles/edit_cache.dir
+/mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles/rebuild_cache.dir

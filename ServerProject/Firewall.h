@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include <iostream>
@@ -12,17 +11,29 @@
 #include <cctype>
 #include <regex>
 #include <limits>
+#include <cstdlib>
+#include <cstdio>
+#include <filesystem>
+#include <chrono>
+#include <cstdint>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <windows.h>
 #include <urlmon.h>
+#pragma comment(lib, "urlmon.lib")
+#else
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 #include <libssh2.h>
 #include <openssl/evp.h>
 
 #include "config.h"
-
-#pragma comment(lib, "urlmon.lib")
 
 class FirewallManager
 {
@@ -161,7 +172,6 @@ private:
     std::string user_;
     int sshPort_ = 22;
 
-    // Состояние текущего экземпляра класса.
     bool installed_ = false;
 
     static constexpr size_t kMaxManifestSize = 64 * 1024;
@@ -171,8 +181,7 @@ private:
     static constexpr const char* kRemotePath =
         "/opt/serverguard/firewall_manager.py";
 
-    // 32 байта публичного Ed25519-ключа.
-    // Закрытый ключ не должен находиться в приложении.
+    // Публичный Ed25519-ключ. Закрытый ключ в приложении не хранится.
     inline static constexpr unsigned char kPublicKey[32] = {
         0xb3, 0xb2, 0x08, 0xce, 0x51, 0xdc, 0x02, 0x8e,
         0xa5, 0xb5, 0x9c, 0xe6, 0xd9, 0x51, 0x5a, 0x9b,
@@ -196,7 +205,7 @@ private:
         const size_t last =
             value.find_last_not_of(" \t\r\n");
 
-        return value.substr(first, last - first + 1);
+        return value.substr(0, last - first + 1);
     }
 
     static bool confirm(const std::string& question)
@@ -329,7 +338,6 @@ private:
                 if (libssh2_channel_eof(channel))
                     break;
 
-                // Для неблокирующей SSH-сессии нужна обработка EAGAIN.
                 break;
             }
             else if (count == LIBSSH2_ERROR_EAGAIN)
@@ -444,16 +452,78 @@ private:
             call({ "protect", action, port });
     }
 
+    // Создаёт уникальный путь во временном каталоге текущей ОС.
+    static bool makeTempPath(
+        const std::string& prefix,
+        std::string& result)
+    {
+        try
+        {
+            const auto directory =
+                std::filesystem::temp_directory_path();
+
+            const auto stamp =
+                std::chrono::high_resolution_clock::now()
+                .time_since_epoch()
+                .count();
+
+            for (unsigned int attempt = 0; attempt < 20; ++attempt)
+            {
+                const std::string name =
+                    prefix + "_" + std::to_string(stamp) + "_" +
+                    std::to_string(attempt) + ".tmp";
+
+                const auto path = directory / name;
+
+                if (!std::filesystem::exists(path))
+                {
+                    result = path.string();
+                    return true;
+                }
+            }
+        }
+        catch (...)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    static void removeTempFile(const std::string& path)
+    {
+        if (path.empty())
+            return;
+
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
+    // Загружает файл по HTTPS с использованием API текущей ОС.
     static bool downloadToFile(
         const std::string& url,
         const std::string& path)
     {
+        if (url.empty() || path.empty())
+            return false;
+
+#ifdef _WIN32
         return URLDownloadToFileA(
             nullptr,
             url.c_str(),
             path.c_str(),
             0,
             nullptr) == S_OK;
+#else
+        // На Linux нужен установленный curl.
+        // q() защищает URL и путь от shell-интерпретации.
+        const std::string command =
+            "curl --fail --location --silent --show-error "
+            "--max-time 60 --output " +
+            q(path) + " " + q(url);
+
+        return std::system(command.c_str()) == 0;
+#endif
     }
 
     static bool readBinaryFile(
@@ -554,8 +624,6 @@ private:
             manifest.size()) == 1;
     }
 
-    // Проверяет поля манифеста и извлекает SHA-256.
-    // Это ограниченная проверка JSON через regex.
     static bool getExpectedScriptHash(
         const std::string& manifest,
         std::string& expectedHash)
@@ -758,45 +826,24 @@ private:
             return false;
         }
 
-        char tempDirectory[MAX_PATH] = {};
+        std::string manifestPath;
+        std::string signaturePath;
+        std::string scriptPath;
 
-        if (!GetTempPathA(MAX_PATH, tempDirectory))
+        if (!makeTempPath("serverguard_manifest", manifestPath) ||
+            !makeTempPath("serverguard_signature", signaturePath) ||
+            !makeTempPath("serverguard_script", scriptPath))
         {
             std::cout
-                << "Cannot determine Windows temp directory.\n";
-            return false;
-        }
-
-        char manifestPath[MAX_PATH] = {};
-        char signaturePath[MAX_PATH] = {};
-        char scriptPath[MAX_PATH] = {};
-
-        if (!GetTempFileNameA(
-            tempDirectory, "sgm", 0, manifestPath) ||
-            !GetTempFileNameA(
-                tempDirectory, "sgs", 0, signaturePath) ||
-            !GetTempFileNameA(
-                tempDirectory, "sgp", 0, scriptPath))
-        {
-            std::cout << "Cannot create temporary files.\n";
-
-            if (manifestPath[0])
-                DeleteFileA(manifestPath);
-
-            if (signaturePath[0])
-                DeleteFileA(signaturePath);
-
-            if (scriptPath[0])
-                DeleteFileA(scriptPath);
-
+                << "Cannot determine a usable temporary directory.\n";
             return false;
         }
 
         const auto cleanup = [&]()
             {
-                DeleteFileA(manifestPath);
-                DeleteFileA(signaturePath);
-                DeleteFileA(scriptPath);
+                removeTempFile(manifestPath);
+                removeTempFile(signaturePath);
+                removeTempFile(scriptPath);
             };
 
         std::cout << "Downloading signed module files...\n";

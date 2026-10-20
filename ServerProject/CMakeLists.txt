@@ -1,56 +1,56 @@
-﻿cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.16)
+project(ServerGuard CXX)
 
-project(ServerProject LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(libssh2 CONFIG REQUIRED)
+# Linux packages (Debian/Ubuntu):
+#   sudo apt install build-essential cmake libssh2-1-dev libssl-dev curl
+# Windows: libssh2 + OpenSSL via vcpkg:
+#   vcpkg install libssh2:x64-windows
+#   cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+
 find_package(OpenSSL REQUIRED)
 
-set(SERVERPROJECT_SOURCES
-    autostart_disable/TelegramBot_DisableAutostart.cpp
-    autostart_enable/TelegramBot_EnableAutostart.cpp
-    FileGuard.cpp
-    generate_code/TelegramBot_GenerateCode.cpp
-    handlers/WebServer_Hardening.cpp
-    handlers/WebServer_Security.cpp
-    handlers/WebServer_ServerStats.cpp
-    handlers/WebServer_SshKeyGuard.cpp
-    handlers/WebServer_Stop.cpp
-    handlers/WebServer_TelegramBot.cpp
-    Help.cpp
-    install/TelegramBot_Install.cpp
-    main.cpp
-    remove/TelegramBot_Remove.cpp
-    restart/TelegramBot_Restart.cpp
-    Security.cpp
-    SSHHardening.cpp
-    SSHKeyGuard.cpp
-    stop/TelegramBot_Stop.cpp
-    TelegramBot.cpp
-    update/TelegramBot_Update.cpp
-    Web.cpp
-    WebServer.cpp
-)
-
-add_executable(ServerProject ${SERVERPROJECT_SOURCES})
-
-if(TARGET unofficial::libssh2::libssh2)
-    target_link_libraries(ServerProject PRIVATE unofficial::libssh2::libssh2)
-elseif(TARGET libssh2::libssh2)
-    target_link_libraries(ServerProject PRIVATE libssh2::libssh2)
-elseif(TARGET libssh2)
-    target_link_libraries(ServerProject PRIVATE libssh2)
+if(WIN32)
+    find_package(Libssh2 CONFIG REQUIRED)
+    set(SG_SSH2_TARGET Libssh2::libssh2)
 else()
-    message(FATAL_ERROR "libssh2 package was found, but its CMake target is unknown.")
+    find_library(LIBSSH2_LIB ssh2 REQUIRED)
+    find_path(LIBSSH2_INCLUDE_DIR libssh2.h REQUIRED)
+
+    add_library(sg_libssh2 INTERFACE)
+    target_link_libraries(sg_libssh2 INTERFACE ${LIBSSH2_LIB})
+    target_include_directories(sg_libssh2 INTERFACE ${LIBSSH2_INCLUDE_DIR})
+
+    set(SG_SSH2_TARGET sg_libssh2)
 endif()
 
-target_link_libraries(ServerProject PRIVATE OpenSSL::Crypto)
+# Sources live in the project root AND in subfolders (install/, handlers/, ...).
+file(GLOB_RECURSE SG_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
+
+# Skip build output folders (build, build-linux, build-cmake, ...) and
+# CMake-generated files such as CMakeCXXCompilerId.cpp (it has its own main()).
+list(FILTER SG_SOURCES EXCLUDE REGEX "/(build[^/]*|CMakeFiles|x64|\\.git)/")
+
+# Security/install.cpp and Security/update.cpp are excluded on purpose:
+# Security.cpp already defines installSecurity()/updateSecurity().
+# Remove this line if they turn out to hold code that is NOT in Security.cpp.
+list(FILTER SG_SOURCES EXCLUDE REGEX "/Security/")
+
+add_executable(ServerGuard ${SG_SOURCES})
+target_include_directories(ServerGuard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(ServerGuard PRIVATE ${SG_SSH2_TARGET} OpenSSL::Crypto)
+
+if(MSVC)
+    target_compile_options(ServerGuard PRIVATE /utf-8)
+endif()
 
 if(WIN32)
-    target_link_libraries(ServerProject PRIVATE ws2_32 shell32)
-    target_compile_definitions(ServerProject PRIVATE WIN32_LEAN_AND_MEAN)
+    target_link_libraries(ServerGuard PRIVATE
+        ws2_32 crypt32 shell32 urlmon wininet)
+else()
+    find_package(Threads REQUIRED)
+    target_link_libraries(ServerGuard PRIVATE Threads::Threads)
 endif()
-
