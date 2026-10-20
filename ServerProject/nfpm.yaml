@@ -1,0 +1,44 @@
+
+name: serverguard
+arch: amd64
+platform: linux
+version: 1.1.8
+release: 1
+section: admin
+priority: optional
+maintainer: ServerGuard
+description: ServerGuard Linux server security manager
+vendor: ServerGuard
+homepage: https://serverguard.site
+license: Proprietary
+
+contents:
+  - src: build-linux/ServerGuard.stripped
+    dst: /usr/bin/serverguard
+    file_info:
+      mode: 0755
+
+overrides:
+  deb:
+    depends:
+      - libc6
+      - libssl3t64
+      - libssh2-1t64
+      - zlib1g
+      - libstdc++6
+      - libgcc-s1
+  rpm:
+    depends:
+      - glibc
+      - openssl-libs
+      - libssh2
+      - zlib
+      - libstdc++
+      - libgcc
+  archlinux:
+    depends:
+      - glibc
+      - openssl
+      - libssh2
+      - zlib
+      - gcc-libs
