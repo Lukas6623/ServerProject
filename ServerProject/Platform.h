@@ -1,4 +1,3 @@
-
 #pragma once
 // ============================================================
 //  Platform.h - cross-platform layer for ServerGuard
@@ -85,7 +84,7 @@ namespace plat
 #endif
 
     // ------------------------------------------------------------
-    //  Network init / cleanup
+    // Network init / cleanup
     // ------------------------------------------------------------
     inline bool initNetwork()
     {
@@ -105,7 +104,7 @@ namespace plat
 #endif
     }
 
-    // non-blocking mode for a socket
+    // Non-blocking mode for a socket.
     inline bool setNonBlocking(SOCKET s, bool enable)
     {
 #ifdef _WIN32
@@ -158,7 +157,7 @@ namespace plat
     }
 
     // ------------------------------------------------------------
-    //  Environment / paths / files
+    // Environment / paths / files
     // ------------------------------------------------------------
 
     // Read an environment variable without triggering MSVC C4996.
@@ -445,7 +444,7 @@ namespace plat
     }
 
     // ------------------------------------------------------------
-    //  Misc helpers
+    // Misc helpers
     // ------------------------------------------------------------
 
     inline char* cstrdup(const char* s)
@@ -538,15 +537,22 @@ namespace plat
         (void)workDir;
         std::cout.flush();
 
-        execl("/bin/sh", "sh", path.c_str(),
+        execl(
+            "/bin/bash",
+            "bash",
+            path.c_str(),
             static_cast<char*>(nullptr));
+
+        // Reached only if execl() fails.
+        std::cerr << "Failed to launch updater: "
+            << path << " (errno " << errno << ")\n";
 
         return false;
 #endif
     }
 
     // ------------------------------------------------------------
-    //  Hidden console input (passwords)
+    // Hidden console input (passwords)
     // ------------------------------------------------------------
     inline std::string readSecret(const std::string& prompt)
     {
@@ -599,7 +605,7 @@ namespace plat
     }
 
     // ------------------------------------------------------------
-    //  Secret storage
+    // Secret storage
     // ------------------------------------------------------------
     inline std::string hexEncode(
         const unsigned char* data,
@@ -892,5 +898,156 @@ namespace plat
         return plain;
 #endif
     }
+
+#ifndef _WIN32
+    // ------------------------------------------------------------
+    // Process / updater helpers (Linux)
+    // ------------------------------------------------------------
+
+    // Full path of the running executable.
+    inline std::string exePath()
+    {
+        char path[PATH_MAX] = {};
+        ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+
+        if (n <= 0)
+            return {};
+
+        std::string full(path, static_cast<size_t>(n));
+
+        // After a package upgrade the kernel appends " (deleted)"
+        const std::string suffix = " (deleted)";
+
+        if (full.size() > suffix.size() &&
+            full.compare(full.size() - suffix.size(),
+                suffix.size(), suffix) == 0)
+        {
+            full.resize(full.size() - suffix.size());
+        }
+
+        return full;
+    }
+
+    inline bool isRoot()
+    {
+        return geteuid() == 0;
+    }
+
+    // Find an executable in PATH. Returns "" if not found.
+    inline std::string findInPath(const std::string& name)
+    {
+        std::string pathEnv = getEnv("PATH");
+
+        if (pathEnv.empty())
+            pathEnv = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+        size_t start = 0;
+
+        while (start <= pathEnv.size())
+        {
+            size_t end = pathEnv.find(':', start);
+
+            if (end == std::string::npos)
+                end = pathEnv.size();
+
+            std::string dir = pathEnv.substr(start, end - start);
+
+            if (!dir.empty())
+            {
+                std::string full = dir + "/" + name;
+
+                if (::access(full.c_str(), X_OK) == 0)
+                    return full;
+            }
+
+            start = end + 1;
+        }
+
+        return {};
+    }
+
+    // Run a program and wait. Returns exit code, or -1 on failure.
+    inline int runProcess(const std::vector<std::string>& args)
+    {
+        if (args.empty())
+            return -1;
+
+        std::vector<char*> argv;
+
+        for (const std::string& a : args)
+            argv.push_back(const_cast<char*>(a.c_str()));
+
+        argv.push_back(nullptr);
+
+        std::cout.flush();
+
+        pid_t pid = fork();
+
+        if (pid < 0)
+            return -1;
+
+        if (pid == 0)
+        {
+            execvp(argv[0], argv.data());
+            _exit(127);
+        }
+
+        int status = 0;
+
+        while (waitpid(pid, &status, 0) < 0)
+        {
+            if (errno != EINTR)
+                return -1;
+        }
+
+        return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    }
+
+    // SHA-256 of a file as lowercase hex ("" on error).
+    inline std::string sha256File(const std::string& path)
+    {
+        std::ifstream f(path, std::ios::binary);
+
+        if (!f)
+            return {};
+
+        EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+
+        if (!ctx)
+            return {};
+
+        unsigned char md[EVP_MAX_MD_SIZE];
+        unsigned int mdLen = 0;
+
+        bool ok = EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1;
+
+        char buf[65536];
+
+        while (ok && f)
+        {
+            f.read(buf, sizeof(buf));
+            std::streamsize n = f.gcount();
+
+            if (n > 0)
+                ok = EVP_DigestUpdate(ctx, buf, static_cast<size_t>(n)) == 1;
+        }
+
+        if (ok)
+            ok = EVP_DigestFinal_ex(ctx, md, &mdLen) == 1;
+
+        EVP_MD_CTX_free(ctx);
+
+        return ok ? hexEncode(md, mdLen) : std::string();
+    }
+
+    // Replace the current process with itself (after an update).
+    inline bool restartSelf(const std::string& exe, char** argv)
+    {
+        std::cout.flush();
+        setenv("SERVERGUARD_UPDATED", "1", 1);   // prevents update loops
+        execv(exe.c_str(), argv);
+        return false;                            // only if execv failed
+    }
+#endif
 
 } // namespace plat

@@ -1,3 +1,7 @@
 /mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles/ServerGuard.dir
 /mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles/edit_cache.dir
 /mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles/rebuild_cache.dir
+/mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles/list_install_components.dir
+/mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles/install.dir
+/mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles/install/local.dir
+/mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles/install/strip.dir

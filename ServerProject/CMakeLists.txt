@@ -1,4 +1,5 @@
-﻿cmake_minimum_required(VERSION 3.16)
+﻿
+cmake_minimum_required(VERSION 3.16)
 project(ServerGuard CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -6,12 +7,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Linux packages (Debian/Ubuntu):
 #   sudo apt install build-essential cmake libssh2-1-dev libssl-dev curl
+#
 # Windows: libssh2 + OpenSSL via vcpkg:
 #   vcpkg install libssh2:x64-windows
 #   cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
 
 find_package(OpenSSL REQUIRED)
 
+# ------------------------------------------------------------
+# libssh2
+# ------------------------------------------------------------
 if(WIN32)
     find_package(Libssh2 CONFIG REQUIRED)
     set(SG_SSH2_TARGET Libssh2::libssh2)
@@ -26,31 +31,80 @@ else()
     set(SG_SSH2_TARGET sg_libssh2)
 endif()
 
-# Sources live in the project root AND in subfolders (install/, handlers/, ...).
-file(GLOB_RECURSE SG_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp")
+# ------------------------------------------------------------
+# Source files
+# ------------------------------------------------------------
+file(GLOB_RECURSE SG_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
+)
 
-# Skip build output folders (build, build-linux, build-cmake, ...) and
-# CMake-generated files such as CMakeCXXCompilerId.cpp (it has its own main()).
-list(FILTER SG_SOURCES EXCLUDE REGEX "/(build[^/]*|CMakeFiles|x64|\\.git)/")
+# Exclude build output directories and generated CMake sources.
+list(FILTER SG_SOURCES EXCLUDE
+    REGEX "/(build[^/]*|CMakeFiles|x64|\\.git)/"
+)
 
-# Security/install.cpp and Security/update.cpp are excluded on purpose:
-# Security.cpp already defines installSecurity()/updateSecurity().
-# Remove this line if they turn out to hold code that is NOT in Security.cpp.
+# Security/install.cpp and Security/update.cpp are excluded
+# because Security.cpp already defines installSecurity()/updateSecurity().
 list(FILTER SG_SOURCES EXCLUDE REGEX "/Security/")
 
+# ------------------------------------------------------------
+# Executable
+# ------------------------------------------------------------
 add_executable(ServerGuard ${SG_SOURCES})
-target_include_directories(ServerGuard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-target_link_libraries(ServerGuard PRIVATE ${SG_SSH2_TARGET} OpenSSL::Crypto)
+target_include_directories(ServerGuard PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
 
+target_link_libraries(ServerGuard PRIVATE
+    ${SG_SSH2_TARGET}
+    OpenSSL::Crypto
+)
+
+# ------------------------------------------------------------
+# Compiler settings
+# ------------------------------------------------------------
 if(MSVC)
     target_compile_options(ServerGuard PRIVATE /utf-8)
 endif()
 
+# ------------------------------------------------------------
+# Platform-specific libraries
+# ------------------------------------------------------------
 if(WIN32)
     target_link_libraries(ServerGuard PRIVATE
-        ws2_32 crypt32 shell32 urlmon wininet)
+        ws2_32
+        crypt32
+        shell32
+        urlmon
+        wininet
+    )
 else()
     find_package(Threads REQUIRED)
-    target_link_libraries(ServerGuard PRIVATE Threads::Threads)
+
+    target_link_libraries(ServerGuard PRIVATE
+        Threads::Threads
+    )
+endif()
+
+# ------------------------------------------------------------
+# Installation
+# ------------------------------------------------------------
+if(UNIX AND NOT APPLE)
+    # Install the executable as:
+    #   <prefix>/bin/ServerGuard
+    install(
+        TARGETS ServerGuard
+        RUNTIME DESTINATION bin
+    )
+
+    # Install the Linux updater script.
+    # With prefix=/usr, it will be installed to:
+    #   /usr/share/serverguard/update-serverguard.sh
+    install(
+        PROGRAMS
+            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/update-serverguard.sh"
+        DESTINATION share/serverguard
+        RENAME update-serverguard.sh
+    )
 endif()

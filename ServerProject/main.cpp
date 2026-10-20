@@ -28,6 +28,13 @@
 #include "Web.h"
 #include "Nano.h"
 #include "Firewall.h"
+#include "Updater.h"
+
+// Current version. Bump on every release, or pass from the build system:
+//   -DSERVERGUARD_VERSION=\"1.1.8\"
+#ifndef SERVERGUARD_VERSION
+#define SERVERGUARD_VERSION "1.1.7"
+#endif
 
 
 enum class AuthMethod
@@ -2193,11 +2200,20 @@ static void serverMenu()
 //  main
 // ============================================================
 
-int main()
+int main(int argc, char** argv)
 {
+    (void)argc;
+    (void)argv;
+
     std::cout << "=============================\n";
     std::cout << "        ServerGuard\n";
     std::cout << "=============================\n";
+
+#ifndef _WIN32
+    // Linux: check for a new version, install it and restart.
+    // Returns normally if there is no update or anything fails.
+    upd::checkAndUpdate(SERVERGUARD_VERSION, argv);
+#endif
 
     if (!plat::initNetwork())
     {

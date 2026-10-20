@@ -1,8 +1,7 @@
-
 name: serverguard
 arch: amd64
 platform: linux
-version: 1.1.8
+version: 1.1.10
 release: 1
 section: admin
 priority: optional
@@ -13,8 +12,15 @@ homepage: https://serverguard.site
 license: Proprietary
 
 contents:
+  # Main executable
   - src: build-linux/ServerGuard.stripped
     dst: /usr/bin/serverguard
+    file_info:
+      mode: 0755
+
+  # Linux updater script
+  - src: packaging/linux/update-serverguard.sh
+    dst: /usr/share/serverguard/update-serverguard.sh
     file_info:
       mode: 0755
 
