@@ -79,25 +79,16 @@ public:
         {
             std::cout
                 << "\n========================================\n"
-                << "          PORT MANAGER (UFW)\n"
-                << "========================================\n"
-                << " 1. Install / update on server\n"
-                << " 2. Service status\n"
-                << " 3. Firewall status\n"
-                << " 4. Show rules (numbered)\n"
-                << " 5. Listening ports\n"
-                << " 6. Open port\n"
-                << " 7. Close port (remove allow rule)\n"
-                << " 8. Block port (deny)\n"
-                << " 9. Unblock port\n"
-                << "10. Limit port (anti-bruteforce)\n"
-                << "11. Delete rule by number\n"
-                << "12. Enable firewall\n"
-                << "13. Disable firewall\n"
-                << "14. Protected ports\n"
-                << "15. Default policy\n"
-                << "16. Remove service\n"
-                << " 0. Back\n\n";
+                << " " << kModuleName << " v" << kModuleVersion << "\n"
+                << "========================================\n\n";
+
+            for (const ModuleCommand& item : kModuleCommands)
+            {
+                std::cout << std::setw(2) << item.key
+                    << ". " << item.title << "\n";
+            }
+
+            std::cout << "\n";
 
             const std::string choice = ask("Select: ");
 
@@ -111,32 +102,32 @@ public:
             else if (choice == "3")
                 call({ "status" });
             else if (choice == "4")
-                call({ "rules" });
+                call({ "enable" });
             else if (choice == "5")
-                call({ "listening" });
+            {
+                if (confirm("Disable the firewall completely?"))
+                    call({ "disable", "--force" });
+            }
             else if (choice == "6")
-                portAction("allow", false);
+                call({ "rules" });
             else if (choice == "7")
-                portAction("close", true);
+                call({ "listening" });
             else if (choice == "8")
-                portAction("deny", true);
+                portAction("allow", false);
             else if (choice == "9")
-                portAction("unblock", false);
+                portAction("close", true);
             else if (choice == "10")
-                portAction("limit", false);
+                portAction("deny", true);
             else if (choice == "11")
+                portAction("unblock", false);
+            else if (choice == "12")
+                portAction("limit", false);
+            else if (choice == "13")
             {
                 const std::string number = ask("Rule number: ");
 
                 if (!number.empty())
                     call({ "delete", number });
-            }
-            else if (choice == "12")
-                call({ "enable" });
-            else if (choice == "13")
-            {
-                if (confirm("Disable the firewall completely?"))
-                    call({ "disable", "--force" });
             }
             else if (choice == "14")
                 protectedMenu();
@@ -167,6 +158,35 @@ public:
     }
 
 private:
+    struct ModuleCommand
+    {
+        const char* key;
+        const char* title;
+    };
+
+    static constexpr const char* kModuleName = "ServerGuard Firewall Manager";
+    static constexpr const char* kModuleVersion = "1.0.0";
+
+    inline static constexpr ModuleCommand kModuleCommands[] = {
+        { "1",  "Install / update on server" },
+        { "2",  "Service status" },
+        { "3",  "Firewall status" },
+        { "4",  "Enable firewall" },
+        { "5",  "Disable firewall" },
+        { "6",  "Show rules (numbered)" },
+        { "7",  "Listening ports" },
+        { "8",  "Open port" },
+        { "9",  "Close port (remove allow rule)" },
+        { "10", "Block port (deny)" },
+        { "11", "Unblock port" },
+        { "12", "Limit port (anti-bruteforce)" },
+        { "13", "Delete rule by number" },
+        { "14", "Protected ports" },
+        { "15", "Default policy" },
+        { "16", "Remove service" },
+        { "0",  "Back" },
+    };
+
     LIBSSH2_SESSION* session_ = nullptr;
     std::string password_;
     std::string user_;
@@ -181,7 +201,6 @@ private:
     static constexpr const char* kRemotePath =
         "/opt/serverguard/firewall_manager.py";
 
-    // Публичный Ed25519-ключ. Закрытый ключ в приложении не хранится.
     inline static constexpr unsigned char kPublicKey[32] = {
         0xb3, 0xb2, 0x08, 0xce, 0x51, 0xdc, 0x02, 0x8e,
         0xa5, 0xb5, 0x9c, 0xe6, 0xd9, 0x51, 0x5a, 0x9b,
@@ -205,7 +224,7 @@ private:
         const size_t last =
             value.find_last_not_of(" \t\r\n");
 
-        return value.substr(0, last - first + 1);
+        return value.substr(first, last - first + 1);
     }
 
     static bool confirm(const std::string& question)
@@ -216,7 +235,6 @@ private:
         return answer == "yes" || answer == "y";
     }
 
-    // Экранирование аргумента для shell на удалённом Linux.
     static std::string q(const std::string& value)
     {
         std::string result = "'";
@@ -452,7 +470,6 @@ private:
             call({ "protect", action, port });
     }
 
-    // Создаёт уникальный путь во временном каталоге текущей ОС.
     static bool makeTempPath(
         const std::string& prefix,
         std::string& result)
@@ -499,7 +516,6 @@ private:
         std::filesystem::remove(path, ec);
     }
 
-    // Загружает файл по HTTPS с использованием API текущей ОС.
     static bool downloadToFile(
         const std::string& url,
         const std::string& path)
@@ -515,8 +531,6 @@ private:
             0,
             nullptr) == S_OK;
 #else
-        // На Linux нужен установленный curl.
-        // q() защищает URL и путь от shell-интерпретации.
         const std::string command =
             "curl --fail --location --silent --show-error "
             "--max-time 60 --output " +

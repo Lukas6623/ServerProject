@@ -1,3 +1,4 @@
+
 #define NOMINMAX
 
 #include "Platform.h"
@@ -34,10 +35,6 @@ static const char* MANIFEST_URL =
 
 static constexpr size_t MAX_MANIFEST_BYTES = 256 * 1024;
 static constexpr size_t MAX_ZIP_BYTES = 64 * 1024 * 1024;
-
-// ============================================================
-// PATHS
-// ============================================================
 
 std::string webBaseDir()
 {
@@ -94,10 +91,6 @@ static std::string installedSha()
     return value;
 }
 
-// ============================================================
-// STRING HELPERS
-// ============================================================
-
 static std::string lowerCopy(std::string s)
 {
     std::transform(
@@ -124,8 +117,6 @@ static std::string trimCopy(const std::string& s)
     return s.substr(a, b - a);
 }
 
-// Extracts a string property from the manifest JSON.
-// This intentionally supports the simple string fields used by the manifest.
 static std::string jsonString(
     const std::string& json,
     const std::string& key)
@@ -171,15 +162,13 @@ static std::string jsonString(
 
             switch (escaped)
             {
-            case '"':  result += '"';  break;
+            case '"':  result += '"'; break;
             case '\\': result += '\\'; break;
-            case '/':  result += '/';  break;
+            case '/':  result += '/'; break;
             case 'n':  result += '\n'; break;
             case 'r':  result += '\r'; break;
             case 't':  result += '\t'; break;
 
-                // The manifest fields we use do not require Unicode
-                // escape decoding. Reject unsupported escapes.
             default:
                 return "";
             }
@@ -203,7 +192,6 @@ static bool validHttpsUrl(const std::string& url)
 
     for (unsigned char c : url)
     {
-        // Prevent shell injection, control characters and malformed URLs.
         if (c <= 0x20 || c == 0x7f ||
             c == '"' || c == '\'' || c == '`' ||
             c == '<' || c == '>' || c == '\\' ||
@@ -217,10 +205,6 @@ static bool validHttpsUrl(const std::string& url)
 
     return url.size() > 8;
 }
-
-// ============================================================
-// SHELL QUOTING AND PROCESS EXECUTION
-// ============================================================
 
 #ifndef _WIN32
 static std::string shellQuote(const std::string& value)
@@ -259,7 +243,6 @@ static std::string shellQuote(const std::string& value)
 static int runCommand(const std::string& command)
 {
 #ifdef _WIN32
-    // The command is built internally from quoted arguments.
     return std::system(command.c_str());
 #else
     const pid_t pid = fork();
@@ -294,9 +277,98 @@ static int runCommand(const std::string& command)
 #endif
 }
 
-// ============================================================
-// FILE HELPERS
-// ============================================================
+#ifndef _WIN32
+
+static bool commandExists(const std::string& name)
+{
+    if (name.empty())
+        return false;
+
+    return runCommand(
+        "command -v " + shellQuote(name) +
+        " >/dev/null 2>&1") == 0;
+}
+
+static bool ensureUnzip()
+{
+    if (commandExists("unzip"))
+        return true;
+
+    std::cout << "Required dependency 'unzip' is missing.\n";
+    std::cout << "Attempting to install unzip...\n";
+
+    std::string installer;
+
+    if (commandExists("apt-get"))
+    {
+        installer =
+            "apt-get update && "
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y unzip";
+    }
+    else if (commandExists("dnf"))
+    {
+        installer = "dnf install -y unzip";
+    }
+    else if (commandExists("yum"))
+    {
+        installer = "yum install -y unzip";
+    }
+    else if (commandExists("pacman"))
+    {
+        installer = "pacman -S --needed --noconfirm unzip";
+    }
+    else if (commandExists("zypper"))
+    {
+        installer = "zypper --non-interactive install unzip";
+    }
+    else if (commandExists("apk"))
+    {
+        installer = "apk add unzip";
+    }
+    else
+    {
+        std::cout
+            << "Cannot install unzip automatically: "
+            << "no supported package manager was found.\n";
+        return false;
+    }
+
+    if (geteuid() != 0)
+    {
+        if (!commandExists("sudo"))
+        {
+            std::cout
+                << "Administrator privileges are required. "
+                << "Install unzip manually or run ServerGuard with sudo.\n";
+            return false;
+        }
+
+        installer = "sudo " + installer;
+    }
+
+    const int result = runCommand(installer);
+
+    if (result != 0)
+    {
+        std::cout
+            << "Automatic installation of unzip failed "
+            << "(exit code " << result << ").\n";
+
+        return false;
+    }
+
+    if (!commandExists("unzip"))
+    {
+        std::cout
+            << "Installation finished, but unzip is unavailable in PATH.\n";
+        return false;
+    }
+
+    std::cout << "Dependency unzip is ready.\n";
+    return true;
+}
+
+#endif
 
 static bool readBinaryFile(
     const fs::path& path,
@@ -341,11 +413,6 @@ static bool writeBinaryFile(
 
     return static_cast<bool>(out);
 }
-
-// ============================================================
-// HTTPS DOWNLOAD
-// Requires curl.exe on Windows or curl on Linux.
-// ============================================================
 
 static bool httpGet(
     const std::string& url,
@@ -403,10 +470,6 @@ static bool httpGet(
 
     return true;
 }
-
-// ============================================================
-// SHA-256
-// ============================================================
 
 static bool sha256Hex(
     const std::string& data,
@@ -501,10 +564,6 @@ static bool sha256Hex(
     return true;
 }
 
-// ============================================================
-// ZIP EXTRACTION
-// ============================================================
-
 static bool extractZip(
     const fs::path& zip,
     const fs::path& dest)
@@ -535,7 +594,9 @@ static bool extractZip(
 
     return runCommand(command) == 0;
 #else
-    // Requires the unzip utility to be installed.
+    if (!ensureUnzip())
+        return false;
+
     const std::string command =
         "unzip -q -o " + shellQuote(zip.string()) +
         " -d " + shellQuote(dest.string());
@@ -543,10 +604,6 @@ static bool extractZip(
     return runCommand(command) == 0;
 #endif
 }
-
-// ============================================================
-// WEB INSTALLATION
-// ============================================================
 
 bool installWebFiles()
 {
@@ -580,7 +637,6 @@ bool installWebFiles()
     }
 
 #ifndef _WIN32
-    // Restrict downloaded data files to the current user.
     fs::permissions(
         baseDir,
         fs::perms::owner_all,
@@ -597,7 +653,6 @@ bool installWebFiles()
             fs::remove(manifestPath, e);
         };
 
-    // 1. Download the manifest.
     std::cout << "Reading manifest...\n";
 
     std::string manifest;
@@ -633,7 +688,6 @@ bool installWebFiles()
         return false;
     }
 
-    // 2. Download the ZIP archive.
     std::cout << "Downloading: " << webUrl << "\n";
 
     std::string zipData;
@@ -648,7 +702,6 @@ bool installWebFiles()
     std::cout << "Downloaded "
         << (zipData.size() / 1024) << " KB.\n";
 
-    // 3. Verify SHA-256 before extracting anything.
     std::string actualSha;
 
     if (!sha256Hex(zipData, actualSha))
@@ -669,7 +722,6 @@ bool installWebFiles()
 
     std::cout << "SHA256 verified.\n";
 
-    // 4. Extract into a temporary directory.
     fs::remove_all(tmpDir, ec);
     ec.clear();
 
@@ -696,13 +748,15 @@ bool installWebFiles()
 
     if (!extractZip(zipPath, tmpDir))
     {
-        std::cout << "Cannot extract archive. "
-            "Check that unzip is installed on Linux.\n";
+        std::cout
+            << "Cannot extract web archive. "
+            << "Check the package manager, permissions, "
+            << "and unzip installation.\n";
+
         cleanup();
         return false;
     }
 
-    // 5. Locate index.html in the archive root or one subdirectory.
     fs::path sourceRoot;
 
     if (fs::exists(tmpDir / "index.html", ec) && !ec)
@@ -737,9 +791,6 @@ bool installWebFiles()
         return false;
     }
 
-    // 6. Install the verified website.
-    // Keep the temporary directory on the same filesystem as target
-    // where possible, so the rename can succeed.
     fs::create_directories(target.parent_path(), ec);
 
     if (ec)
@@ -796,8 +847,6 @@ bool installWebFiles()
     }
 
 #ifndef _WIN32
-    // Website assets are readable by the user running ServerGuard.
-    // Preserve executable bits from the archive where present.
     fs::permissions(
         target,
         fs::perms::owner_all,
@@ -809,7 +858,6 @@ bool installWebFiles()
     fs::remove_all(backup, ec);
     ec.clear();
 
-    // Record the verified archive hash.
     {
         std::ofstream shaOut(shaFilePath(), std::ios::trunc);
 
@@ -831,10 +879,6 @@ bool installWebFiles()
 
     return true;
 }
-
-// ============================================================
-// REMOVE WEBSITE
-// ============================================================
 
 bool removeWebFiles()
 {
@@ -861,10 +905,6 @@ bool removeWebFiles()
 
     return true;
 }
-
-// ============================================================
-// web COMMAND
-// ============================================================
 
 void handleWebCommand(
     const std::string& arg,

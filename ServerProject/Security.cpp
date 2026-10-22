@@ -21,6 +21,27 @@
 #include "Platform.h"
 #include "config.h"
 
+static const char* MODULE_NAME = "ServerGuard Security";
+static const char* MODULE_VERSION = "1.0.0";
+
+struct ModuleCommand
+{
+    const char* key;
+    const char* title;
+};
+
+static const ModuleCommand MODULE_COMMANDS[] = {
+    { "1", "Install / enable protection" },
+    { "2", "Start protection" },
+    { "3", "Stop protection" },
+    { "4", "Disable automatic startup" },
+    { "5", "Check status" },
+    { "6", "Show logs" },
+    { "7", "Update Security" },
+    { "8", "Uninstall Security" },
+    { "0", "Back" },
+};
+
 static const std::string SECURITY_DIR = "/opt/serverguard";
 static const std::string SECURITY_DATA_DIR = "/opt/serverguard/data";
 static const std::string SECURITY_SCRIPT = "/opt/serverguard/brute_force_guard.py";
@@ -31,35 +52,26 @@ static const std::string SECURITY_BACKUP_DIR = "/opt/serverguard/backups/securit
 static const std::string SECURITY_BACKUP_SCRIPT = "/opt/serverguard/backups/security/brute_force_guard.py";
 static const std::string SECURITY_STATS_FILE = "/opt/serverguard/data/stats.json";
 
-// URLs come straight from config.h (no URL derivation via rfind('/')).
 static const std::string SECURITY_UPDATE_URL = ServerGuardConfig::SECURITY_SCRIPT_URL;
 static const std::string SECURITY_MANIFEST_URL = ServerGuardConfig::SECURITY_MANIFEST_URL;
 static const std::string SECURITY_SIGNATURE_URL = ServerGuardConfig::SECURITY_SIGNATURE_URL;
 
 static const int SECURITY_BACKUP_KEEP = 5;
 
-// ---- Signed module verification (done locally, like FirewallManager) ----
-
 static const size_t SECURITY_MAX_MANIFEST_SIZE = 64 * 1024;
 static const size_t SECURITY_MAX_SIGNATURE_SIZE = 64;
 static const size_t SECURITY_MAX_SCRIPT_SIZE = 4 * 1024 * 1024;
 
-// Name of the script inside manifest.json ("path" field).
 static const char* SECURITY_MANIFEST_ENTRY = ServerGuardConfig::SECURITY_MAIN_SCRIPT_NAME;
 
-// Temporary base64 file on the server (uploaded in chunks).
 static const std::string SECURITY_TEMP_BASE64 = "/tmp/.sg_security.b64";
 
-// 32 bytes of the Ed25519 public key of brute_force_guard.
-// d36e3610bb16c33bca3f0c345874d033726ed83400024800cff08d31172c1769
-// The private key must never be stored in the application.
 static const unsigned char SECURITY_PUBLIC_KEY[32] = {
     0xd3, 0x6e, 0x36, 0x10, 0xbb, 0x16, 0xc3, 0x3b,
     0xca, 0x3f, 0x0c, 0x34, 0x58, 0x74, 0xd0, 0x33,
     0x72, 0x6e, 0xd8, 0x34, 0x00, 0x02, 0x48, 0x00,
     0xcf, 0xf0, 0x8d, 0x31, 0x17, 0x2c, 0x17, 0x69
 };
-
 
 
 static void sleepMs(int ms)
@@ -277,13 +289,6 @@ static std::string securityJsonEscape(const std::string& value)
     return result;
 }
 
-
-
-// ---- Download / signature helpers ----
-
-// Platform-specific download lives in Platform.h (plat::downloadFile):
-//   Windows: URLDownloadToFileA (+ cache entry removal)
-//   Linux:   curl (fork/execvp, no shell)
 static bool downloadToFile(const std::string& url, const std::string& path)
 {
     return plat::downloadFile(url, path, SECURITY_MAX_SCRIPT_SIZE);
@@ -370,7 +375,6 @@ static bool verifyEd25519(const std::string& manifest, const std::string& signat
         manifest.size()) == 1;
 }
 
-// Checks manifest fields and extracts the SHA-256 of brute_force_guard.py.
 static bool getExpectedScriptHash(const std::string& manifest, std::string& expectedHash)
 {
     expectedHash.clear();
@@ -388,7 +392,6 @@ static bool getExpectedScriptHash(const std::string& manifest, std::string& expe
 
     const std::string entry = SECURITY_MANIFEST_ENTRY;
 
-    // "brute_force_guard.py" has a dot; escape it for the regex.
     std::string escaped;
 
     for (char c : entry)
@@ -518,7 +521,6 @@ static std::string base64Encode(const std::string& input)
 }
 
 
-
 Security::Security(LIBSSH2_SESSION* sshSession, const std::string& password)
     : session(sshSession),
     sudoPassword(password),
@@ -576,7 +578,6 @@ bool Security::isSSHSecurityEnabled() const
 }
 
 
-
 bool Security::reconnect()
 {
     if (!reconnectCallback)
@@ -627,7 +628,6 @@ int Security::executeOnce(
         return 1;
     }
 
-
     struct ModeGuard
     {
         LIBSSH2_SESSION* s;
@@ -674,7 +674,6 @@ int Security::executeOnce(
             libssh2_channel_free(channel);
         };
 
-
     libssh2_channel_handle_extended_data2(channel, LIBSSH2_CHANNEL_EXTENDED_DATA_MERGE);
 
     const bool usePty = elevated && needPty;
@@ -683,7 +682,6 @@ int Security::executeOnce(
     {
         libssh2_channel_request_pty(channel, "xterm");
     }
-
 
     const std::string wrapped =
         "export LC_ALL=C PATH=\"$PATH:/usr/local/sbin:/usr/sbin:/sbin\"; " + command;
@@ -763,7 +761,6 @@ int Security::executeOnce(
             return 1;
         }
     }
-
 
     if (!usePty)
     {
@@ -879,7 +876,6 @@ bool Security::executeRemote(
     output.clear();
     exitCode = -1;
 
-
     if (useSudo && !inPrivilegeCheck && !sudoAuthenticated)
     {
         if (!ensurePrivileges())
@@ -905,7 +901,6 @@ bool Security::executeRemote(
 
                 if (contains(low, "must have a tty") || contains(low, "requiretty"))
                 {
-
                     needPty = true;
                     continue;
                 }
@@ -918,7 +913,6 @@ bool Security::executeRemote(
         {
             return false;
         }
-
 
         if (attempt + 1 < maxAttempts)
         {
@@ -933,7 +927,6 @@ bool Security::executeRemote(
 
     return false;
 }
-
 
 
 bool Security::ensurePrivileges()
@@ -1053,7 +1046,6 @@ bool Security::checkPrivileges(bool verbose)
 
     sudoRequired = true;
 
-
     output.clear();
 
     if (executeRemote("sudo -n true", output, exitCode, false, 20) && exitCode == 0)
@@ -1108,7 +1100,6 @@ bool Security::checkRootOrSudo()
 {
     return checkPrivileges(true);
 }
-
 
 
 bool Security::commandExists(const std::string& command)
@@ -1193,7 +1184,6 @@ bool Security::installPackages(const std::vector<std::string>& packages)
 
         if (manager == "apt" && contains(low, "dpkg --configure -a"))
         {
-
             std::string fixOutput;
             int fixCode = -1;
 
@@ -1279,7 +1269,6 @@ std::string Security::pythonPath()
 }
 
 
-
 std::vector<std::string> Security::detectSshPorts()
 {
     std::vector<std::string> ports;
@@ -1296,7 +1285,6 @@ std::vector<std::string> Security::detectSshPorts()
         }
     }
 
-
     output.clear();
 
     if (executeRemote("sshd -T 2>/dev/null | awk '$1 == \"port\" {print $2}'", output, exitCode, true, 30))
@@ -1309,7 +1297,6 @@ std::vector<std::string> Security::detectSshPorts()
             }
         }
     }
-
 
     output.clear();
 
@@ -1327,7 +1314,6 @@ std::vector<std::string> Security::detectSshPorts()
             }
         }
     }
-
 
     output.clear();
 
@@ -1403,7 +1389,6 @@ bool Security::setupFirewall(bool& firewallManaged)
             std::cout << "[WARN] Could not install UFW.\n";
         }
     }
-
 
     auto useIptablesFallback = [&](const std::string& reason) -> bool
         {
@@ -1498,7 +1483,6 @@ bool Security::setupFirewall(bool& firewallManaged)
         return true;
     }
 
-
     std::vector<std::string> tcpPorts = { "80", "443" };
 
     std::string cyberPanel;
@@ -1536,7 +1520,6 @@ bool Security::setupFirewall(bool& firewallManaged)
             std::cout << "[WARN] Could not allow " << port << "/tcp\n";
         }
     }
-
 
     if (std::find(tcpPorts.begin(), tcpPorts.end(), "21") != tcpPorts.end())
     {
@@ -1593,7 +1576,6 @@ bool Security::setupFirewall(bool& firewallManaged)
         executeRemote("ufw --force disable", output, exitCode, true, 30);
         return useIptablesFallback("UFW did not become active.");
     }
-
 
     for (const std::string& port : sshPorts)
     {
@@ -1770,7 +1752,6 @@ int Security::serviceRestartCount()
     return 0;
 }
 
-
 bool Security::waitServiceStable(int seconds)
 {
     const int baseline = serviceRestartCount();
@@ -1918,7 +1899,6 @@ bool Security::disableService()
 }
 
 
-
 bool Security::verifyScriptFile(const std::string& path, bool runSelfTest)
 {
     std::string output;
@@ -1996,13 +1976,8 @@ bool Security::verifyScriptFile(const std::string& path, bool runSelfTest)
     return true;
 }
 
-// Downloads brute_force_guard.py + manifest.json + manifest.sig on the LOCAL
-// machine (Windows or Linux), verifies Ed25519 signature and SHA-256 locally
-// (OpenSSL), then uploads the verified script to SECURITY_TEMP_SCRIPT on the
-// server. The server never downloads anything and never runs unverified code.
 bool Security::downloadScriptToTemp()
 {
-    // Temp files are created through Platform.h (GetTempFileName / mkstemp).
     std::string manifestPath = plat::makeTempFile("sgm");
     std::string signaturePath = plat::makeTempFile("sgs");
     std::string scriptPath = plat::makeTempFile("sgp");
@@ -2024,7 +1999,6 @@ bool Security::downloadScriptToTemp()
 
     std::cout << "Downloading signed module files...\n";
 
-    // Download each file separately so the error says exactly which URL failed.
     struct DownloadItem
     {
         const char* label;
@@ -2070,7 +2044,6 @@ bool Security::downloadScriptToTemp()
         return false;
     }
 
-    // Local copies are in memory now.
     cleanup();
 
     std::cout << "Checking Ed25519 signature...\n";
@@ -2117,7 +2090,6 @@ bool Security::downloadScriptToTemp()
         return false;
     }
 
-    // Upload as base64 chunks into /tmp (no sudo needed), then decode with sudo.
     const std::string encoded = base64Encode(script);
     const size_t chunkSize = 6000;
 
@@ -2165,7 +2137,6 @@ bool Security::downloadScriptToTemp()
         return false;
     }
 
-    // Make sure the uploaded copy is byte-identical to what we verified.
     output.clear();
 
     if (!executeRemote(
@@ -2181,7 +2152,6 @@ bool Security::downloadScriptToTemp()
 
     std::cout << "[OK] Verified script uploaded.\n";
 
-    // Only now run syntax check and self-test (the script is already trusted).
     if (!verifyScriptFile(SECURITY_TEMP_SCRIPT, true))
     {
         executeRemote("rm -f " + shellQuote(SECURITY_TEMP_SCRIPT), cleanupOutput, cleanupCode, true, 30);
@@ -2269,7 +2239,6 @@ bool Security::rollbackSecurityUpdate()
     return true;
 }
 
-
 bool Security::ensureScriptHealthy()
 {
     std::string output;
@@ -2340,7 +2309,6 @@ void Security::registerTrustedClientIp()
         std::cout << "[OK] Your current IP (" << ip << ") is trusted and will never be blocked.\n";
     }
 }
-
 
 
 bool Security::installSecurity()
@@ -2468,8 +2436,6 @@ bool Security::installSecurity()
 
     return true;
 }
-
-
 
 
 bool Security::updateSecurity()
@@ -2635,7 +2601,6 @@ bool Security::updateSecurity()
 }
 
 
-
 bool Security::uninstallSecurity()
 {
     std::cout
@@ -2671,7 +2636,6 @@ bool Security::uninstallSecurity()
     }
 
     std::cout << "[OK] Service stopped and disabled, if it existed.\n";
-
 
     std::cout << "[2/6] Removing firewall blocks created by ServerGuard...\n";
 
@@ -2773,19 +2737,16 @@ void Security::menu()
 {
     while (true)
     {
-        std::cout << "\n========================================\n ServerGuard Security\n========================================\n\n";
+        std::cout << "\n========================================\n "
+            << MODULE_NAME << " v" << MODULE_VERSION
+            << "\n========================================\n\n";
 
-        std::cout << "1. Install / enable protection\n"
-            << "2. Start protection\n"
-            << "3. Stop protection\n"
-            << "4. Disable automatic startup\n"
-            << "5. Check status\n"
-            << "6. Show logs\n"
-            << "7. Update Security\n"
-            << "8. Uninstall Security\n"
-            << "0. Back\n\n";
+        for (const ModuleCommand& item : MODULE_COMMANDS)
+        {
+            std::cout << item.key << ". " << item.title << "\n";
+        }
 
-        std::cout << "Select: ";
+        std::cout << "\nSelect: ";
 
         std::string choice;
 
@@ -2908,18 +2869,14 @@ void Security::menu()
             continue;
         }
 
-
         if (choice == "6")
         {
-            // FIX: the original code called webInstall() here (a re-install),
-            // although the menu item says "Show logs".
             std::cout << "\n----------------------------------------\n ServerGuard Security Logs\n----------------------------------------\n";
 
             printOutput(webLogs());
 
             continue;
         }
-
 
         if (choice == "7")
         {
@@ -2984,7 +2941,6 @@ void Security::menu()
         std::cout << "\nUnknown option.\n";
     }
 }
-
 
 
 bool Security::webInstall()
@@ -3060,7 +3016,6 @@ long long Security::webThreats()
 {
     std::string output;
     int exitCode = -1;
-
 
     const std::string command =
         "if [ -f " + shellQuote(SECURITY_STATS_FILE) + " ]; then "

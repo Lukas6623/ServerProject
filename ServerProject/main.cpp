@@ -1,5 +1,5 @@
-// ServerGuard main.cpp - cross-platform (Windows + Linux)
-// All OS-specific code is in Platform.h (namespace plat).
+// ServerGuard - main.cpp
+// OS-specific code lives in Platform.h (namespace plat).
 
 #include <iostream>
 #include <iomanip>
@@ -14,7 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "Platform.h"   // must come before anything that needs sockets
+#include "Platform.h"   // must be included before anything that uses sockets
 
 #include <libssh2.h>
 
@@ -30,10 +30,9 @@
 #include "Firewall.h"
 #include "Updater.h"
 
-// Current version. Bump on every release, or pass from the build system:
-//   -DSERVERGUARD_VERSION=\"1.1.8\"
+// Can be overridden by the build system: -DSERVERGUARD_VERSION=\"1.1.8\"
 #ifndef SERVERGUARD_VERSION
-#define SERVERGUARD_VERSION "1.1.7"
+#define SERVERGUARD_VERSION "1.1.12"
 #endif
 
 
@@ -87,10 +86,6 @@ static int authMethodNumber(AuthMethod m)
 }
 
 
-// ============================================================
-//  Server profile
-// ============================================================
-
 struct Config
 {
     std::string name;
@@ -99,8 +94,8 @@ struct Config
     int port = 22;
     std::string username;
 
-    std::string password;       // login / sudo password (memory)
-    bool savePassword = false;  // store password (encrypted)
+    std::string password;
+    bool savePassword = false;
 
     AuthMethod auth = AuthMethod::Password;
 
@@ -108,14 +103,10 @@ struct Config
     std::string passphrase;     // never saved
 };
 
-
-// Set by the 'update' terminal command; main() runs the updater at the end.
 static bool g_updateRequested = false;
 
 
-// ============================================================
-//  Helpers
-// ============================================================
+// ---------- helpers ----------
 
 static std::string trim(const std::string& s)
 {
@@ -146,9 +137,7 @@ static std::string readLine(const std::string& prompt, const std::string& def = 
     std::string line;
 
     if (!std::getline(std::cin, line))
-    {
         return def;
-    }
 
     line = trim(line);
 
@@ -168,9 +157,7 @@ static std::string stripQuotes(std::string s)
     s = trim(s);
 
     if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
-    {
         s = s.substr(1, s.size() - 2);
-    }
 
     return s;
 }
@@ -180,9 +167,7 @@ static std::string defaultKeyPath()
     std::string home = plat::homeDir();
 
     if (home.empty())
-    {
         return "";
-    }
 
     std::string base = home + plat::PATH_SEP + ".ssh" + plat::PATH_SEP;
 
@@ -191,9 +176,7 @@ static std::string defaultKeyPath()
     for (const char* name : names)
     {
         if (plat::fileExists(base + name))
-        {
             return base + name;
-        }
     }
 
     return base + "id_ed25519";
@@ -205,11 +188,7 @@ static std::string toHex(const unsigned char* data, size_t len)
 }
 
 
-// ============================================================
-//  Updater
-//   Windows: SetupServerGuard.exe
-//   Linux:   update-serverguard.sh (run with /bin/sh)
-// ============================================================
+// ---------- updater ----------
 
 #ifdef _WIN32
 static const char* UPDATER_NAME = "SetupServerGuard.exe";
@@ -278,9 +257,7 @@ static bool runUpdater()
 }
 
 
-// ============================================================
-//  Profile storage (servers.cfg, tab separated)
-// ============================================================
+// ---------- profile storage (servers.cfg, tab separated) ----------
 
 static const std::string PROFILES_FILE =
 plat::joinPath(plat::appDataDir(), "servers.cfg");
@@ -319,7 +296,7 @@ static bool saveProfiles(const std::vector<Config>& list)
         }
     }
 
-    plat::restrictFile(PROFILES_FILE);   // chmod 600 on Linux
+    plat::restrictFile(PROFILES_FILE);
 
     return true;
 }
@@ -386,7 +363,7 @@ static std::vector<Config> loadProfiles()
     return list;
 }
 
-// Import of the old single-server file (server.cfg)
+// Imports the old single-server file (server.cfg).
 static void migrateLegacyConfig()
 {
     if (plat::fileExists(PROFILES_FILE) || !plat::fileExists(LEGACY_FILE))
@@ -461,9 +438,7 @@ static void ensureProfilesFile()
 }
 
 
-// ============================================================
-//  Profile editor
-// ============================================================
+// ---------- profile editor ----------
 
 static bool editProfile(Config& cfg, bool isNew)
 {
@@ -623,9 +598,7 @@ static bool editProfile(Config& cfg, bool isNew)
 }
 
 
-// ============================================================
-//  Host key verification
-// ============================================================
+// ---------- host key verification ----------
 
 bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
 {
@@ -815,14 +788,11 @@ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
 }
 
 
-// ============================================================
-//  Authentication
-// ============================================================
+// ---------- authentication ----------
 
 struct KbdContext
 {
     const std::string* password = nullptr;
-
     bool passwordUsed = false;
 };
 
@@ -840,14 +810,10 @@ static void kbdCallback(
         abstract ? static_cast<KbdContext*>(*abstract) : nullptr;
 
     if (name && name_len > 0)
-    {
         std::cout << "\n" << std::string(name, name_len) << "\n";
-    }
 
     if (instruction && instruction_len > 0)
-    {
         std::cout << std::string(instruction, instruction_len) << "\n";
-    }
 
     for (int i = 0; i < num_prompts; i++)
     {
@@ -861,15 +827,13 @@ static void kbdCallback(
         bool isPassword =
             toLower(prompt).find("password") != std::string::npos;
 
-        if (
-            isPassword &&
+        if (isPassword &&
             ctx &&
             ctx->password &&
             !ctx->password->empty() &&
             !ctx->passwordUsed)
         {
             answer = *ctx->password;
-
             ctx->passwordUsed = true;
         }
         else
@@ -881,16 +845,13 @@ static void kbdCallback(
         }
 
         responses[i].text = plat::cstrdup(answer.c_str());
-
-        responses[i].length =
-            static_cast<unsigned int>(answer.size());
+        responses[i].length = static_cast<unsigned int>(answer.size());
     }
 }
 
 static void printSessionError(LIBSSH2_SESSION* session)
 {
     char* message = nullptr;
-
     int length = 0;
 
     int code =
@@ -946,7 +907,6 @@ static bool authPublicKey(LIBSSH2_SESSION* session, const Config& cfg)
     if (cfg.keyPath.empty())
     {
         std::cout << "Private key path is not set.\n";
-
         return false;
     }
 
@@ -1007,7 +967,6 @@ static bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)
     if (!agent)
     {
         std::cout << "Cannot initialize SSH agent support.\n";
-
         return false;
     }
 
@@ -1025,7 +984,6 @@ static bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)
 #endif
 
         libssh2_agent_free(agent);
-
         return false;
     }
 
@@ -1061,11 +1019,10 @@ static bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)
 
         anyIdentity = true;
 
-        if (
-            libssh2_agent_userauth(
-                agent,
-                cfg.username.c_str(),
-                identity) == 0)
+        if (libssh2_agent_userauth(
+            agent,
+            cfg.username.c_str(),
+            identity) == 0)
         {
             std::cout
                 << "Agent key accepted: "
@@ -1073,7 +1030,6 @@ static bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)
                 << "\n";
 
             authenticated = true;
-
             break;
         }
 
@@ -1086,9 +1042,7 @@ static bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)
     }
 
     if (!anyIdentity)
-    {
         std::cout << "SSH agent has no keys loaded.\n";
-    }
 
     libssh2_agent_disconnect(agent);
     libssh2_agent_free(agent);
@@ -1171,9 +1125,7 @@ bool authenticate(LIBSSH2_SESSION* session, const Config& cfg)
 
         if (!supports("publickey"))
         {
-            std::cout
-                << "The server does not allow public key login.\n";
-
+            std::cout << "The server does not allow public key login.\n";
             return false;
         }
 
@@ -1183,9 +1135,7 @@ bool authenticate(LIBSSH2_SESSION* session, const Config& cfg)
 
         if (!supports("publickey"))
         {
-            std::cout
-                << "The server does not allow public key login.\n";
-
+            std::cout << "The server does not allow public key login.\n";
             return false;
         }
 
@@ -1209,9 +1159,7 @@ bool authenticate(LIBSSH2_SESSION* session, const Config& cfg)
 }
 
 
-// ============================================================
-//  Connection
-// ============================================================
+// ---------- connection ----------
 
 static void closeConnection(
     LIBSSH2_SESSION*& session,
@@ -1222,19 +1170,15 @@ static void closeConnection(
     if (session)
     {
         if (sendDisconnect)
-        {
             libssh2_session_disconnect(session, reason);
-        }
 
         libssh2_session_free(session);
-
         session = nullptr;
     }
 
     if (sock != INVALID_SOCKET)
     {
         closesocket(sock);
-
         sock = INVALID_SOCKET;
     }
 }
@@ -1249,23 +1193,19 @@ bool openConnection(
     if (sock == INVALID_SOCKET)
     {
         std::cout << "\nCannot create socket.\n";
-
         return false;
     }
 
     sockaddr_in sin{};
 
     sin.sin_family = AF_INET;
-
-    sin.sin_port =
-        htons(static_cast<unsigned short>(cfg.port));
+    sin.sin_port = htons(static_cast<unsigned short>(cfg.port));
 
     if (inet_pton(AF_INET, cfg.host.c_str(), &sin.sin_addr) <= 0)
     {
         std::cout << "\nInvalid server IP.\n";
 
         closeConnection(session, sock, "", false);
-
         return false;
     }
 
@@ -1287,7 +1227,6 @@ bool openConnection(
             << ").\n";
 
         closeConnection(session, sock, "", false);
-
         return false;
     }
 
@@ -1300,7 +1239,6 @@ bool openConnection(
         std::cout << "Cannot create SSH session.\n";
 
         closeConnection(session, sock, "", false);
-
         return false;
     }
 
@@ -1316,7 +1254,6 @@ bool openConnection(
             << ").\n";
 
         closeConnection(session, sock, "", false);
-
         return false;
     }
 
@@ -1327,7 +1264,6 @@ bool openConnection(
         std::cout << "\nHost key is not trusted. Connection aborted.\n";
 
         closeConnection(session, sock, "Host key rejected", true);
-
         return false;
     }
 
@@ -1336,7 +1272,6 @@ bool openConnection(
         std::cout << "\nAuthentication failed.\n";
 
         closeConnection(session, sock, "Authentication failed", true);
-
         return false;
     }
 
@@ -1346,9 +1281,7 @@ bool openConnection(
 }
 
 
-// ============================================================
-//  Remote commands
-// ============================================================
+// ---------- remote commands ----------
 
 bool executeCommand(
     LIBSSH2_SESSION* session,
@@ -1357,7 +1290,6 @@ bool executeCommand(
     if (!session)
     {
         std::cout << "SSH session is not available.\n";
-
         return false;
     }
 
@@ -1367,7 +1299,6 @@ bool executeCommand(
     if (!channel)
     {
         std::cout << "Cannot open SSH channel.\n";
-
         return false;
     }
 
@@ -1376,7 +1307,6 @@ bool executeCommand(
         std::cout << "Cannot execute command.\n";
 
         libssh2_channel_free(channel);
-
         return false;
     }
 
@@ -1390,7 +1320,6 @@ bool executeCommand(
         if (rc > 0)
         {
             buffer[rc] = '\0';
-
             std::cout << buffer;
         }
         else if (rc == 0)
@@ -1400,7 +1329,6 @@ bool executeCommand(
         else
         {
             std::cout << "\nError reading server response.\n";
-
             break;
         }
     }
@@ -1422,7 +1350,6 @@ bool changeDirectory(
     if (!session)
     {
         std::cout << "SSH session is not available.\n";
-
         return false;
     }
 
@@ -1453,7 +1380,6 @@ bool changeDirectory(
     if (!channel)
     {
         std::cout << "Cannot open SSH channel.\n";
-
         return false;
     }
 
@@ -1462,7 +1388,6 @@ bool changeDirectory(
         std::cout << "Cannot change directory.\n";
 
         libssh2_channel_free(channel);
-
         return false;
     }
 
@@ -1478,7 +1403,6 @@ bool changeDirectory(
         if (rc > 0)
         {
             buffer[rc] = '\0';
-
             result += buffer;
         }
         else
@@ -1493,8 +1417,7 @@ bool changeDirectory(
 
     libssh2_channel_free(channel);
 
-    while (
-        !result.empty() &&
+    while (!result.empty() &&
         (result.back() == '\n' || result.back() == '\r'))
     {
         result.pop_back();
@@ -1503,7 +1426,6 @@ bool changeDirectory(
     if (result.empty())
     {
         std::cout << "Directory does not exist.\n";
-
         return false;
     }
 
@@ -1513,9 +1435,7 @@ bool changeDirectory(
 }
 
 
-// ============================================================
-//  Server terminal
-// ============================================================
+// ---------- server terminal ----------
 
 void runServerTerminal(
     LIBSSH2_SESSION* session,
@@ -1530,7 +1450,8 @@ void runServerTerminal(
     FileGuard fileGuard(session, cfg.password);
 
     std::cout << "\n";
-    std::cout << "ServerGuard terminal - " << cfg.name << "\n";
+    std::cout << "ServerGuard v" << SERVERGUARD_VERSION
+        << " terminal - " << cfg.name << "\n";
     std::cout << "Type 'help' to show all commands and modules.\n";
     std::cout << "Type 'ls' to list files.\n";
     std::cout << "Type 'pwd' to show current directory.\n";
@@ -1575,21 +1496,16 @@ void runServerTerminal(
         command = trim(command);
 
         if (command.empty())
-        {
             continue;
-        }
 
         if (command == "exit" || command == "servers")
-        {
             break;
-        }
 
         try
         {
             if (command == "help")
             {
                 showHelp();
-
                 continue;
             }
 
@@ -1672,8 +1588,7 @@ void runServerTerminal(
                 continue;
             }
 
-            if (
-                command == "sshkeys" ||
+            if (command == "sshkeys" ||
                 command == "ssh-key-guard" ||
                 command == "sshkeyguard")
             {
@@ -1688,7 +1603,6 @@ void runServerTerminal(
             if (command == "fileguard")
             {
                 fileGuard.menu();
-
                 continue;
             }
 
@@ -1717,9 +1631,7 @@ void runServerTerminal(
                 std::string directory = trim(command.substr(3));
 
                 if (directory.empty())
-                {
                     continue;
-                }
 
                 changeDirectory(session, currentDirectory, directory);
 
@@ -1748,9 +1660,7 @@ void runServerTerminal(
 }
 
 
-// ============================================================
-//  One connected session (modules + terminal + cleanup)
-// ============================================================
+// ---------- one connected session ----------
 
 static void runSession(Config& cfg, SOCKET& sock, LIBSSH2_SESSION*& session)
 {
@@ -1841,9 +1751,7 @@ static void runSession(Config& cfg, SOCKET& sock, LIBSSH2_SESSION*& session)
 }
 
 
-// ============================================================
-//  Connect to a profile (with retry / edit / back)
-// ============================================================
+// ---------- connecting to a profile ----------
 
 enum class FailAction
 {
@@ -1998,15 +1906,14 @@ static void connectToServer(std::vector<Config>& all, size_t index)
 }
 
 
-// ============================================================
-//  Server list (main menu)
-// ============================================================
+// ---------- server list (main menu) ----------
 
 static void printServerList(const std::vector<Config>& list)
 {
     std::cout << "\n";
     std::cout << "=========================================================\n";
-    std::cout << "                  SERVERGUARD - MY SERVERS\n";
+    std::cout << "            SERVERGUARD v" << SERVERGUARD_VERSION
+        << " - MY SERVERS\n";
     std::cout << "=========================================================\n";
 
     if (list.empty())
@@ -2090,9 +1997,7 @@ static void serverMenu()
         std::string lc = toLower(input);
 
         if (lc == "q" || lc == "quit" || lc == "exit")
-        {
             return;
-        }
 
         if (lc == "a" || lc == "add")
         {
@@ -2196,29 +2101,32 @@ static void serverMenu()
 }
 
 
-// ============================================================
-//  main
-// ============================================================
-
 int main(int argc, char** argv)
 {
-    (void)argc;
-    (void)argv;
+    if (argc > 1)
+    {
+        std::string arg = argv[1];
+
+        if (arg == "--version" || arg == "-v")
+        {
+            std::cout << "ServerGuard " << SERVERGUARD_VERSION << "\n";
+            return 0;
+        }
+    }
 
     std::cout << "=============================\n";
     std::cout << "        ServerGuard\n";
+    std::cout << "        version " << SERVERGUARD_VERSION << "\n";
     std::cout << "=============================\n";
 
 #ifndef _WIN32
     // Linux: check for a new version, install it and restart.
-    // Returns normally if there is no update or anything fails.
     upd::checkAndUpdate(SERVERGUARD_VERSION, argv);
 #endif
 
     if (!plat::initNetwork())
     {
         std::cout << "Network initialization failed.\n";
-
         return 1;
     }
 
@@ -2227,7 +2135,6 @@ int main(int argc, char** argv)
         std::cout << "libssh2 initialization failed.\n";
 
         plat::cleanupNetwork();
-
         return 1;
     }
 
@@ -2253,7 +2160,6 @@ int main(int argc, char** argv)
 
     plat::cleanupNetwork();
 
-    // On Linux runUpdater() replaces this process with the updater script.
     if (g_updateRequested)
     {
         if (!runUpdater())

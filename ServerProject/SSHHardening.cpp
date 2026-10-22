@@ -12,6 +12,26 @@
 #include <utility>
 #include <vector>
 
+static const char* MODULE_NAME = "ServerGuard SSH Hardening";
+static const char* MODULE_VERSION = "1.0.0";
+
+struct ModuleCommand
+{
+    const char* key;
+    const char* title;
+};
+
+static const ModuleCommand MODULE_COMMANDS[] = {
+    { "1", "Install / update hardening script" },
+    { "2", "Apply hardening" },
+    { "3", "Check hardening status" },
+    { "4", "Disable hardening" },
+    { "5", "Show SSH configuration" },
+    { "6", "Restore backup" },
+    { "7", "Remove hardening (config + script)" },
+    { "0", "Back" },
+};
+
 static const std::string SERVERGUARD_DIR = "/opt/serverguard";
 static const std::string HARDENING_SCRIPT = ServerGuardConfig::SSH_HARDENING_SCRIPT_PATH;
 static const std::string SSH_CONFIG = "/etc/ssh/sshd_config";
@@ -31,7 +51,6 @@ static const std::string LINE = "============================================\n"
 static const std::chrono::seconds COMMAND_TIMEOUT(600);
 static const size_t MAX_OUTPUT_BYTES = 4u * 1024u * 1024u;
 
-// ---------------------------------------------------------------- helpers
 
 static std::string shellQuote(const std::string& value)
 {
@@ -54,7 +73,6 @@ static void printIfNotEmpty(const std::string& text)
     if (!text.empty()) std::cout << text << "\n";
 }
 
-// chown root:root + chmod <mode>
 static std::string chownChmod(const std::string& path, const std::string& mode)
 {
     return "chown root:root " + shellQuote(path) +
@@ -97,7 +115,6 @@ static std::string jsonEscape(const std::string& text)
         default:
             if (static_cast<unsigned char>(c) < 0x20)
             {
-                // Remaining control characters (ESC from colored ls, etc.)
                 char buf[8];
                 std::snprintf(buf, sizeof(buf), "\\u%04x",
                     static_cast<unsigned>(static_cast<unsigned char>(c)));
@@ -130,9 +147,6 @@ static void pauseBriefly()
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
 }
 
-// Runs one command on a fresh channel, optionally feeding `input` to its stdin.
-// Returns true if the command was executed (check exitCode for its result).
-// Works in both blocking and non-blocking libssh2 modes and has a timeout.
 static bool runCommand(
     LIBSSH2_SESSION* session,
     const std::string& command,
@@ -197,7 +211,6 @@ static bool runCommand(
         return fail(text);
     }
 
-    // stdin (used for the sudo password; never placed on the command line)
     size_t sent = 0;
 
     while (sent < input.size())
@@ -217,14 +230,12 @@ static bool runCommand(
         sent += static_cast<size_t>(n);
     }
 
-    // Always close stdin so commands that read it can never hang.
     while ((rc = libssh2_channel_send_eof(channel)) == LIBSSH2_ERROR_EAGAIN)
     {
         if (expired()) return fail("Timed out while closing remote stdin.");
         pauseBriefly();
     }
 
-    // stdout + stderr (merged)
     char buffer[4096];
     bool timedOut = false;
 
@@ -273,7 +284,6 @@ static bool runCommand(
     return true;
 }
 
-// ------------------------------------------------- effective sshd settings
 
 struct SshdCheck
 {
@@ -282,7 +292,6 @@ struct SshdCheck
     const char* expected;
 };
 
-// What ServerGuard hardening must produce in `sshd -T`.
 static const std::vector<SshdCheck> HARDENING_CHECKS = {
     { "PasswordAuthentication", "passwordauthentication", "no" },
     { "PubkeyAuthentication",   "pubkeyauthentication",   "yes" },
@@ -294,7 +303,6 @@ static const std::vector<SshdCheck> HARDENING_CHECKS = {
     { "Compression",            "compression",            "no" }
 };
 
-// Informational only (not part of the pass/fail verdict).
 static const std::vector<std::pair<std::string, std::string>> SHOWN_OPTIONS = {
     { "PermitRootLogin", "permitrootlogin" },
     { "PasswordAuthentication", "passwordauthentication" },
@@ -335,7 +343,6 @@ static bool evaluateHardening(const std::string& sshdOutput, bool print)
     return allGood;
 }
 
-// ------------------------------------------------------------ constructor
 
 SSHHardening::SSHHardening(
     LIBSSH2_SESSION* sshSession,
@@ -351,7 +358,6 @@ SSHHardening::SSHHardening(
     privilegesOk(false)
 {}
 
-// ------------------------------------------------------- remote execution
 
 bool SSHHardening::executeRemote(
     const std::string& command,
@@ -373,8 +379,6 @@ bool SSHHardening::executeRemote(
 
     if (useSudo)
     {
-        // Privileges are resolved lazily, so every entry point (including
-        // webStatus / webBackups) behaves correctly for non-root users.
         if (!privilegesChecked && !checkRootOrSudo())
         {
             output = "Cannot obtain root privileges.";
@@ -389,9 +393,6 @@ bool SSHHardening::executeRemote(
 
         if (sudoRequired)
         {
-            // sudo timestamps are per tty/session, so a password cached by an
-            // earlier channel is NOT visible to this one. Feed the password
-            // through stdin every time instead of relying on `sudo -n`.
             finalCommand = "sudo -S -p '' bash -c " + shellQuote(command);
             input = sudoPassword + "\n";
         }
@@ -428,7 +429,6 @@ bool SSHHardening::authenticateSudo()
     std::string output;
     int exitCode = -1;
 
-    // -k ignores any cached credentials so the password is really verified.
     const bool ran = runCommand(
         session, "sudo -S -p '' -k true", sudoPassword + "\n",
         output, exitCode);
@@ -446,7 +446,6 @@ bool SSHHardening::authenticateSudo()
     return false;
 }
 
-// ------------------------------------------------------------- pre-checks
 
 bool SSHHardening::commandExists(const std::string& command)
 {
@@ -578,7 +577,6 @@ bool SSHHardening::setPermissions()
     return true;
 }
 
-// -------------------------------------------------------------- hardening
 
 bool SSHHardening::runHardening()
 {
@@ -661,7 +659,6 @@ bool SSHHardening::checkSSHService()
     std::string output;
     int exitCode = -1;
 
-    // Ubuntu may use ssh.service, sshd.service or socket activation.
     static const char* units[] = { "ssh", "sshd", "ssh.socket" };
 
     for (const char* unit : units)
@@ -690,14 +687,12 @@ bool SSHHardening::isSSHConfigValid(bool verbose)
     return true;
 }
 
-// ---------------------------------------------------------------- backups
 
 bool SSHHardening::showBackups()
 {
     std::string output;
     int exitCode = -1;
 
-    // A missing directory simply means "no backups yet", not an error.
     if (!executeRemote(
         "if [ -d " + shellQuote(BACKUP_DIR) + " ]; then ls -lah " +
         shellQuote(BACKUP_DIR) + "; fi",
@@ -735,7 +730,6 @@ bool SSHHardening::restoreConfiguration()
 
     if (filename.empty()) return false;
 
-    // Strict whitelist instead of a blacklist of bad characters.
     const bool validChars = std::all_of(filename.begin(), filename.end(),
         [](unsigned char c)
         {
@@ -803,7 +797,6 @@ bool SSHHardening::restoreConfiguration()
     return true;
 }
 
-// ---------------------------------------------------------- update helpers
 
 bool SSHHardening::downloadUpdate()
 {
@@ -860,8 +853,6 @@ bool SSHHardening::verifyUpdate()
         return false;
     }
 
-    // The trusted public key is compiled into ServerGuard; it is never
-    // downloaded from GitHub.
     const std::string writeKey =
         "umask 077; printf '%s' " + shellQuote(publicKeyPem) +
         " > " + shellQuote(HARDENING_PUBLIC_KEY) +
@@ -874,7 +865,6 @@ bool SSHHardening::verifyUpdate()
         return false;
     }
 
-    // The exact manifest bytes are signed.
     const std::string verifySignature =
         "openssl pkeyutl -verify -rawin -pubin -inkey " +
         shellQuote(HARDENING_PUBLIC_KEY) +
@@ -890,9 +880,6 @@ bool SSHHardening::verifyUpdate()
 
     std::cout << "Ed25519 signature: VALID\n";
 
-    // Expected manifest:
-    // {"format":"ServerGuardModuleManifest","version":1,"algorithm":"Ed25519",
-    //  "files":[{"path":"ssh_hardening.py","sha256":"<64 hex>"}]}
     const std::string pythonCommand =
         "import hashlib,json,sys,re,ast;"
         "m=json.load(open(sys.argv[1],encoding='utf-8'));"
@@ -990,8 +977,6 @@ bool SSHHardening::installUpdatedScript()
     std::string output;
     int exitCode = -1;
 
-    // Fix owner/mode on the temp file first, then atomically move it into
-    // place (same filesystem), so the script is never briefly world-writable.
     if (!executeRemote(chownChmod(HARDENING_TEMP_SCRIPT, "700"),
         output, exitCode, true))
     {
@@ -1118,7 +1103,6 @@ bool SSHHardening::update()
         "ast.parse(p,filename='ssh_hardening.py');"
         "print('Installed script: OK')";
 
-    // Script is root-only (700), so it must be read with privileges.
     if (!executeRemote(
         "python3 -c " + shellQuote(pythonCommand) + " " +
         shellQuote(HARDENING_SCRIPT),
@@ -1157,42 +1141,40 @@ bool SSHHardening::update()
     return true;
 }
 
-// ------------------------------------------------------------------- menu
 
 void SSHHardening::menu()
 {
     while (true)
     {
-        std::cout << "\n" << LINE << "             SSH HARDENING\n" << LINE
-            << "\n"
-            << "1. Apply hardening\n"
-            << "2. Check hardening status\n"
-            << "3. Disable hardening\n"
-            << "4. Show SSH configuration\n"
-            << "5. Restore backup\n"
-            << "6. Install / update hardening script\n"
-            << "7. Remove hardening (config + script)\n"
-            << "0. Back\n"
-            << "\nSelect: ";
+        std::cout << "\n========================================\n "
+            << MODULE_NAME << " v" << MODULE_VERSION
+            << "\n========================================\n\n";
+
+        for (const ModuleCommand& item : MODULE_COMMANDS)
+        {
+            std::cout << item.key << ". " << item.title << "\n";
+        }
+
+        std::cout << "\nSelect: ";
 
         std::string choice;
-        if (!std::getline(std::cin, choice)) return; // EOF: don't loop forever
+        if (!std::getline(std::cin, choice)) return;
 
         if (choice == "0") return;
 
-        if (choice == "1")
+        if (choice == "2")
         {
             if (!webApply()) std::cout << "\nSSH hardening was not applied.\n\n";
             continue;
         }
 
-        if (choice == "2")
+        if (choice == "3")
         {
             if (checkRootOrSudo()) checkHardening();
             continue;
         }
 
-        if (choice == "3")
+        if (choice == "4")
         {
             if (!checkRootOrSudo()) continue;
 
@@ -1225,7 +1207,7 @@ void SSHHardening::menu()
             continue;
         }
 
-        if (choice == "4")
+        if (choice == "5")
         {
             if (!checkRootOrSudo()) continue;
 
@@ -1248,13 +1230,13 @@ void SSHHardening::menu()
             continue;
         }
 
-        if (choice == "5")
+        if (choice == "6")
         {
             restoreConfiguration();
             continue;
         }
 
-        if (choice == "6")
+        if (choice == "1")
         {
             if (!checkRootOrSudo()) continue;
 
@@ -1317,7 +1299,6 @@ bool SSHHardening::isEnabled() const
     return hardeningEnabled;
 }
 
-// ------------------------------------------------------------- web API
 
 bool SSHHardening::webInstall()
 {
@@ -1351,7 +1332,6 @@ bool SSHHardening::webInstall()
         return false;
     }
 
-    // Do not trust an existing script merely because the file exists.
     if (!downloadUpdate())
     {
         removeTempFiles();
@@ -1365,7 +1345,6 @@ bool SSHHardening::webInstall()
         return false;
     }
 
-    // If replacing an existing script, preserve a backup first.
     const bool hadScript = checkScript();
 
     if (hadScript && !backupCurrentScript())
@@ -1426,8 +1405,6 @@ bool SSHHardening::webRemove()
         return false;
     }
 
-    // Back up the current hardening config (only if it exists). A stale
-    // backup from an older run must never be "restored" later.
     const bool hadConfig = executeRemote(
         "test -f " + shellQuote(HARDENING_CONFIG),
         output, exitCode, true);
@@ -1483,7 +1460,6 @@ bool SSHHardening::webRemove()
         return false;
     }
 
-    // Apply the change first; only delete the script once it succeeded.
     std::cout << "Reloading SSH service...\n";
 
     if (!executeRemote(reloadCommand, output, exitCode, true))
@@ -1558,7 +1534,7 @@ bool SSHHardening::webApply()
     {
         std::cout << "SSH Hardening script was not found:\n"
             << HARDENING_SCRIPT << "\n"
-            << "Install it first (menu option 6 / web install).\n";
+            << "Install it first (menu option 1 / web install).\n";
         return false;
     }
 
@@ -1586,8 +1562,6 @@ std::string SSHHardening::webStatus()
             return ",\"" + k + "\":\"" + jsonEscape(v) + "\"";
         };
 
-    // Without this check a non-root user gets "unknown" for everything,
-    // because `sshd -T` needs privileges.
     if (!checkRootOrSudo())
     {
         hardeningEnabled = false;

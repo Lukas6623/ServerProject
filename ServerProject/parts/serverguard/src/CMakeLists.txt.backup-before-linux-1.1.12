@@ -1,0 +1,157 @@
+﻿
+cmake_minimum_required(VERSION 3.21)
+
+project(ServerGuard LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+if(WIN32)
+    set(SG_VCPKG_ROOT "C:/vcpkg/installed/x64-windows")
+    set(SG_VCPKG_BIN "${SG_VCPKG_ROOT}/bin")
+    set(SG_LIBSSH2_INCLUDE_DIR "${SG_VCPKG_ROOT}/include")
+    set(SG_LIBSSH2_RELEASE_LIB "${SG_VCPKG_ROOT}/lib/libssh2.lib")
+    set(SG_LIBSSH2_DEBUG_LIB "${SG_VCPKG_ROOT}/debug/lib/libssh2.lib")
+
+    if(NOT EXISTS "${SG_LIBSSH2_INCLUDE_DIR}/libssh2.h")
+        message(FATAL_ERROR "libssh2.h not found: ${SG_LIBSSH2_INCLUDE_DIR}")
+    endif()
+
+    if(NOT EXISTS "${SG_LIBSSH2_RELEASE_LIB}")
+        message(FATAL_ERROR "libssh2.lib not found: ${SG_LIBSSH2_RELEASE_LIB}")
+    endif()
+
+    if(NOT EXISTS "${SG_VCPKG_BIN}/libssh2.dll")
+        message(FATAL_ERROR "libssh2.dll not found: ${SG_VCPKG_BIN}")
+    endif()
+
+    add_library(sg_libssh2 UNKNOWN IMPORTED GLOBAL)
+
+    set_target_properties(sg_libssh2 PROPERTIES
+        IMPORTED_CONFIGURATIONS "Debug;Release;RelWithDebInfo;MinSizeRel"
+        IMPORTED_LOCATION_RELEASE "${SG_LIBSSH2_RELEASE_LIB}"
+        IMPORTED_LOCATION_RELWITHDEBINFO "${SG_LIBSSH2_RELEASE_LIB}"
+        IMPORTED_LOCATION_MINSIZEREL "${SG_LIBSSH2_RELEASE_LIB}"
+        INTERFACE_INCLUDE_DIRECTORIES "${SG_LIBSSH2_INCLUDE_DIR}"
+    )
+
+    if(EXISTS "${SG_LIBSSH2_DEBUG_LIB}")
+        set_target_properties(sg_libssh2 PROPERTIES
+            IMPORTED_LOCATION_DEBUG "${SG_LIBSSH2_DEBUG_LIB}"
+        )
+    else()
+        set_target_properties(sg_libssh2 PROPERTIES
+            MAP_IMPORTED_CONFIG_DEBUG Release
+        )
+    endif()
+
+    set(SG_SSH2_TARGET sg_libssh2)
+else()
+    find_library(LIBSSH2_LIB NAMES ssh2 REQUIRED)
+    find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h REQUIRED)
+
+    add_library(sg_libssh2 INTERFACE)
+
+    target_link_libraries(sg_libssh2 INTERFACE
+        "${LIBSSH2_LIB}"
+    )
+
+    target_include_directories(sg_libssh2 INTERFACE
+        "${LIBSSH2_INCLUDE_DIR}"
+    )
+
+    set(SG_SSH2_TARGET sg_libssh2)
+endif()
+
+find_package(OpenSSL REQUIRED)
+
+file(GLOB_RECURSE SG_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
+)
+
+list(FILTER SG_SOURCES EXCLUDE
+    REGEX "/(build[^/]*|CMakeFiles|x64|\\.git|dist|parts|stage|prime)/"
+)
+
+list(FILTER SG_SOURCES EXCLUDE
+    REGEX "/Security/"
+)
+
+if(NOT SG_SOURCES)
+    message(FATAL_ERROR "No C++ source files found for ServerGuard.")
+endif()
+
+add_executable(ServerGuard ${SG_SOURCES})
+
+target_include_directories(ServerGuard PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+target_link_libraries(ServerGuard PRIVATE
+    ${SG_SSH2_TARGET}
+    OpenSSL::Crypto
+)
+
+if(MSVC)
+    target_compile_options(ServerGuard PRIVATE /utf-8)
+endif()
+
+if(WIN32)
+    target_link_libraries(ServerGuard PRIVATE
+        ws2_32
+        crypt32
+        bcrypt
+        shell32
+        urlmon
+        wininet
+    )
+
+    set(SG_RELEASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist/windows-x64")
+
+    add_custom_command(TARGET ServerGuard POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "${SG_RELEASE_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:ServerGuard>"
+            "${SG_RELEASE_DIR}/"
+        VERBATIM
+    )
+
+    set(SG_RUNTIME_DLLS
+        libssh2.dll
+        libcrypto-3-x64.dll
+        libssl-3-x64.dll
+        z.dll
+        legacy.dll
+    )
+
+    foreach(SG_DLL IN LISTS SG_RUNTIME_DLLS)
+        if(EXISTS "${SG_VCPKG_BIN}/${SG_DLL}")
+            add_custom_command(TARGET ServerGuard POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${SG_VCPKG_BIN}/${SG_DLL}"
+                    "${SG_RELEASE_DIR}/"
+                VERBATIM
+            )
+        endif()
+    endforeach()
+else()
+    find_package(Threads REQUIRED)
+
+    target_link_libraries(ServerGuard PRIVATE
+        Threads::Threads
+    )
+endif()
+
+if(UNIX AND NOT APPLE)
+    install(TARGETS ServerGuard
+        RUNTIME DESTINATION bin
+    )
+
+    install(PROGRAMS
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/update-serverguard.sh"
+        DESTINATION share/serverguard
+        RENAME update-serverguard.sh
+    )
+endif()

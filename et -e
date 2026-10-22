@@ -1,0 +1,926 @@
+warning: in the working copy of 'ServerProject/CMakeLists.txt', CRLF will be replaced by LF the next time Git touches it
+[1mdiff --git a/ServerProject/CMakeLists.txt b/ServerProject/CMakeLists.txt[m
+[1mindex d377e18..a1fd657 100644[m
+[1m--- a/ServerProject/CMakeLists.txt[m
+[1m+++ b/ServerProject/CMakeLists.txt[m
+[36m@@ -1,55 +1,87 @@[m
+ ﻿[m
+[31m-cmake_minimum_required(VERSION 3.16)[m
+[31m-project(ServerGuard CXX)[m
+[32m+[m[32mcmake_minimum_required(VERSION 3.21)[m
+[32m+[m
+[32m+[m[32mproject(ServerGuard LANGUAGES CXX)[m
+ [m
+ set(CMAKE_CXX_STANDARD 17)[m
+ set(CMAKE_CXX_STANDARD_REQUIRED ON)[m
+[32m+[m[32mset(CMAKE_CXX_EXTENSIONS OFF)[m
+ [m
+[31m-# Linux packages (Debian/Ubuntu):[m
+[31m-#   sudo apt install build-essential cmake libssh2-1-dev libssl-dev curl[m
+[31m-#[m
+[31m-# Windows: libssh2 + OpenSSL via vcpkg:[m
+[31m-#   vcpkg install libssh2:x64-windows[m
+[31m-#   cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake[m
+[32m+[m[32mif(WIN32)[m
+[32m+[m[32m    set(SG_VCPKG_ROOT "C:/vcpkg/installed/x64-windows")[m
+[32m+[m[32m    set(SG_VCPKG_BIN "${SG_VCPKG_ROOT}/bin")[m
+[32m+[m[32m    set(SG_LIBSSH2_INCLUDE_DIR "${SG_VCPKG_ROOT}/include")[m
+[32m+[m[32m    set(SG_LIBSSH2_RELEASE_LIB "${SG_VCPKG_ROOT}/lib/libssh2.lib")[m
+[32m+[m[32m    set(SG_LIBSSH2_DEBUG_LIB "${SG_VCPKG_ROOT}/debug/lib/libssh2.lib")[m
+[32m+[m
+[32m+[m[32m    if(NOT EXISTS "${SG_LIBSSH2_INCLUDE_DIR}/libssh2.h")[m
+[32m+[m[32m        message(FATAL_ERROR "libssh2.h not found: ${SG_LIBSSH2_INCLUDE_DIR}")[m
+[32m+[m[32m    endif()[m
+[32m+[m
+[32m+[m[32m    if(NOT EXISTS "${SG_LIBSSH2_RELEASE_LIB}")[m
+[32m+[m[32m        message(FATAL_ERROR "libssh2.lib not found: ${SG_LIBSSH2_RELEASE_LIB}")[m
+[32m+[m[32m    endif()[m
+[32m+[m
+[32m+[m[32m    if(NOT EXISTS "${SG_VCPKG_BIN}/libssh2.dll")[m
+[32m+[m[32m        message(FATAL_ERROR "libssh2.dll not found: ${SG_VCPKG_BIN}")[m
+[32m+[m[32m    endif()[m
+[32m+[m
+[32m+[m[32m    add_library(sg_libssh2 UNKNOWN IMPORTED GLOBAL)[m
+[32m+[m
+[32m+[m[32m    set_target_properties(sg_libssh2 PROPERTIES[m
+[32m+[m[32m        IMPORTED_CONFIGURATIONS "Debug;Release;RelWithDebInfo;MinSizeRel"[m
+[32m+[m[32m        IMPORTED_LOCATION_RELEASE "${SG_LIBSSH2_RELEASE_LIB}"[m
+[32m+[m[32m        IMPORTED_LOCATION_RELWITHDEBINFO "${SG_LIBSSH2_RELEASE_LIB}"[m
+[32m+[m[32m        IMPORTED_LOCATION_MINSIZEREL "${SG_LIBSSH2_RELEASE_LIB}"[m
+[32m+[m[32m        INTERFACE_INCLUDE_DIRECTORIES "${SG_LIBSSH2_INCLUDE_DIR}"[m
+[32m+[m[32m    )[m
+ [m
+[31m-find_package(OpenSSL REQUIRED)[m
+[32m+[m[32m    if(EXISTS "${SG_LIBSSH2_DEBUG_LIB}")[m
+[32m+[m[32m        set_target_properties(sg_libssh2 PROPERTIES[m
+[32m+[m[32m            IMPORTED_LOCATION_DEBUG "${SG_LIBSSH2_DEBUG_LIB}"[m
+[32m+[m[32m        )[m
+[32m+[m[32m    else()[m
+[32m+[m[32m        set_target_properties(sg_libssh2 PROPERTIES[m
+[32m+[m[32m            MAP_IMPORTED_CONFIG_DEBUG Release[m
+[32m+[m[32m        )[m
+[32m+[m[32m    endif()[m
+ [m
+[31m-# ------------------------------------------------------------[m
+[31m-# libssh2[m
+[31m-# ------------------------------------------------------------[m
+[31m-if(WIN32)[m
+[31m-    find_package(Libssh2 CONFIG REQUIRED)[m
+[31m-    set(SG_SSH2_TARGET Libssh2::libssh2)[m
+[32m+[m[32m    set(SG_SSH2_TARGET sg_libssh2)[m
+ else()[m
+[31m-    find_library(LIBSSH2_LIB ssh2 REQUIRED)[m
+[31m-    find_path(LIBSSH2_INCLUDE_DIR libssh2.h REQUIRED)[m
+[32m+[m[32m    find_library(LIBSSH2_LIB NAMES ssh2 REQUIRED)[m
+[32m+[m[32m    find_path(LIBSSH2_INCLUDE_DIR NAMES libssh2.h REQUIRED)[m
+ [m
+     add_library(sg_libssh2 INTERFACE)[m
+[31m-    target_link_libraries(sg_libssh2 INTERFACE ${LIBSSH2_LIB})[m
+[31m-    target_include_directories(sg_libssh2 INTERFACE ${LIBSSH2_INCLUDE_DIR})[m
+[32m+[m
+[32m+[m[32m    target_link_libraries(sg_libssh2 INTERFACE[m
+[32m+[m[32m        "${LIBSSH2_LIB}"[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    target_include_directories(sg_libssh2 INTERFACE[m
+[32m+[m[32m        "${LIBSSH2_INCLUDE_DIR}"[m
+[32m+[m[32m    )[m
+ [m
+     set(SG_SSH2_TARGET sg_libssh2)[m
+ endif()[m
+ [m
+[31m-# ------------------------------------------------------------[m
+[31m-# Source files[m
+[31m-# ------------------------------------------------------------[m
+[32m+[m[32mfind_package(OpenSSL REQUIRED)[m
+[32m+[m
+ file(GLOB_RECURSE SG_SOURCES CONFIGURE_DEPENDS[m
+     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"[m
+ )[m
+ [m
+[31m-# Exclude build output directories and generated CMake sources.[m
+ list(FILTER SG_SOURCES EXCLUDE[m
+[31m-    REGEX "/(build[^/]*|CMakeFiles|x64|\\.git)/"[m
+[32m+[m[32m    REGEX "/(build[^/]*|CMakeFiles|x64|\\.git|dist)/"[m
+[32m+[m[32m)[m
+[32m+[m
+[32m+[m[32mlist(FILTER SG_SOURCES EXCLUDE[m
+[32m+[m[32m    REGEX "/Security/"[m
+ )[m
+ [m
+[31m-# Security/install.cpp and Security/update.cpp are excluded[m
+[31m-# because Security.cpp already defines installSecurity()/updateSecurity().[m
+[31m-list(FILTER SG_SOURCES EXCLUDE REGEX "/Security/")[m
+[32m+[m[32mif(NOT SG_SOURCES)[m
+[32m+[m[32m    message(FATAL_ERROR "No C++ source files found for ServerGuard.")[m
+[32m+[m[32mendif()[m
+ [m
+[31m-# ------------------------------------------------------------[m
+[31m-# Executable[m
+[31m-# ------------------------------------------------------------[m
+ add_executable(ServerGuard ${SG_SOURCES})[m
+ [m
+ target_include_directories(ServerGuard PRIVATE[m
+[36m@@ -61,24 +93,49 @@[m [mtarget_link_libraries(ServerGuard PRIVATE[m
+     OpenSSL::Crypto[m
+ )[m
+ [m
+[31m-# ------------------------------------------------------------[m
+[31m-# Compiler settings[m
+[31m-# ------------------------------------------------------------[m
+ if(MSVC)[m
+     target_compile_options(ServerGuard PRIVATE /utf-8)[m
+ endif()[m
+ [m
+[31m-# ------------------------------------------------------------[m
+[31m-# Platform-specific libraries[m
+[31m-# ------------------------------------------------------------[m
+ if(WIN32)[m
+     target_link_libraries(ServerGuard PRIVATE[m
+         ws2_32[m
+         crypt32[m
+[32m+[m[32m        bcrypt[m
+         shell32[m
+         urlmon[m
+         wininet[m
+     )[m
+[32m+[m
+[32m+[m[32m    set(SG_RELEASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dist/windows-x64")[m
+[32m+[m
+[32m+[m[32m    add_custom_command(TARGET ServerGuard POST_BUILD[m
+[32m+[m[32m        COMMAND "${CMAKE_COMMAND}" -E make_directory[m
+[32m+[m[32m            "${SG_RELEASE_DIR}"[m
+[32m+[m[32m        COMMAND "${CMAKE_COMMAND}" -E copy_if_different[m
+[32m+[m[32m            "$<TARGET_FILE:ServerGuard>"[m
+[32m+[m[32m            "${SG_RELEASE_DIR}/"[m
+[32m+[m[32m        VERBATIM[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    set(SG_RUNTIME_DLLS[m
+[32m+[m[32m        libssh2.dll[m
+[32m+[m[32m        libcrypto-3-x64.dll[m
+[32m+[m[32m        libssl-3-x64.dll[m
+[32m+[m[32m        z.dll[m
+[32m+[m[32m        legacy.dll[m
+[32m+[m[32m    )[m
+[32m+[m
+[32m+[m[32m    foreach(SG_DLL IN LISTS SG_RUNTIME_DLLS)[m
+[32m+[m[32m        if(EXISTS "${SG_VCPKG_BIN}/${SG_DLL}")[m
+[32m+[m[32m            add_custom_command(TARGET ServerGuard POST_BUILD[m
+[32m+[m[32m                COMMAND "${CMAKE_COMMAND}" -E copy_if_different[m
+[32m+[m[32m                    "${SG_VCPKG_BIN}/${SG_DLL}"[m
+[32m+[m[32m                    "${SG_RELEASE_DIR}/"[m
+[32m+[m[32m                VERBATIM[m
+[32m+[m[32m            )[m
+[32m+[m[32m        endif()[m
+[32m+[m[32m    endforeach()[m
+ else()[m
+     find_package(Threads REQUIRED)[m
+ [m
+[36m@@ -87,23 +144,13 @@[m [melse()[m
+     )[m
+ endif()[m
+ [m
+[31m-# ------------------------------------------------------------[m
+[31m-# Installation[m
+[31m-# ------------------------------------------------------------[m
+ if(UNIX AND NOT APPLE)[m
+[31m-    # Install the executable as:[m
+[31m-    #   <prefix>/bin/ServerGuard[m
+[31m-    install([m
+[31m-        TARGETS ServerGuard[m
+[32m+[m[32m    install(TARGETS ServerGuard[m
+         RUNTIME DESTINATION bin[m
+     )[m
+ [m
+[31m-    # Install the Linux updater script.[m
+[31m-    # With prefix=/usr, it will be installed to:[m
+[31m-    #   /usr/share/serverguard/update-serverguard.sh[m
+[31m-    install([m
+[31m-        PROGRAMS[m
+[31m-            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/update-serverguard.sh"[m
+[32m+[m[32m    install(PROGRAMS[m
+[32m+[m[32m        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/update-serverguard.sh"[m
+         DESTINATION share/serverguard[m
+         RENAME update-serverguard.sh[m
+     )[m
+[1mdiff --git a/ServerProject/main.cpp b/ServerProject/main.cpp[m
+[1mindex 0908020..36ca7ea 100644[m
+[1m--- a/ServerProject/main.cpp[m
+[1m+++ b/ServerProject/main.cpp[m
+[36m@@ -1,5 +1,5 @@[m
+[31m-// ServerGuard main.cpp - cross-platform (Windows + Linux)[m
+[31m-// All OS-specific code is in Platform.h (namespace plat).[m
+[32m+[m[32m// ServerGuard - main.cpp[m
+[32m+[m[32m// OS-specific code lives in Platform.h (namespace plat).[m
+ [m
+ #include <iostream>[m
+ #include <iomanip>[m
+[36m@@ -14,7 +14,7 @@[m
+ #include <cstdlib>[m
+ #include <cstring>[m
+ [m
+[31m-#include "Platform.h"   // must come before anything that needs sockets[m
+[32m+[m[32m#include "Platform.h"   // must be included before anything that uses sockets[m
+ [m
+ #include <libssh2.h>[m
+ [m
+[36m@@ -30,10 +30,9 @@[m
+ #include "Firewall.h"[m
+ #include "Updater.h"[m
+ [m
+[31m-// Current version. Bump on every release, or pass from the build system:[m
+[31m-//   -DSERVERGUARD_VERSION=\"1.1.8\"[m
+[32m+[m[32m// Can be overridden by the build system: -DSERVERGUARD_VERSION=\"1.1.8\"[m
+ #ifndef SERVERGUARD_VERSION[m
+[31m-#define SERVERGUARD_VERSION "1.1.7"[m
+[32m+[m[32m#define SERVERGUARD_VERSION "1.1.12"[m
+ #endif[m
+ [m
+ [m
+[36m@@ -87,10 +86,6 @@[m [mstatic int authMethodNumber(AuthMethod m)[m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Server profile[m
+[31m-// ============================================================[m
+[31m-[m
+ struct Config[m
+ {[m
+     std::string name;[m
+[36m@@ -99,8 +94,8 @@[m [mstruct Config[m
+     int port = 22;[m
+     std::string username;[m
+ [m
+[31m-    std::string password;       // login / sudo password (memory)[m
+[31m-    bool savePassword = false;  // store password (encrypted)[m
+[32m+[m[32m    std::string password;[m
+[32m+[m[32m    bool savePassword = false;[m
+ [m
+     AuthMethod auth = AuthMethod::Password;[m
+ [m
+[36m@@ -108,14 +103,10 @@[m [mstruct Config[m
+     std::string passphrase;     // never saved[m
+ };[m
+ [m
+[31m-[m
+[31m-// Set by the 'update' terminal command; main() runs the updater at the end.[m
+ static bool g_updateRequested = false;[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Helpers[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- helpers ----------[m
+ [m
+ static std::string trim(const std::string& s)[m
+ {[m
+[36m@@ -146,9 +137,7 @@[m [mstatic std::string readLine(const std::string& prompt, const std::string& def =[m
+     std::string line;[m
+ [m
+     if (!std::getline(std::cin, line))[m
+[31m-    {[m
+         return def;[m
+[31m-    }[m
+ [m
+     line = trim(line);[m
+ [m
+[36m@@ -168,9 +157,7 @@[m [mstatic std::string stripQuotes(std::string s)[m
+     s = trim(s);[m
+ [m
+     if (s.size() >= 2 && s.front() == '"' && s.back() == '"')[m
+[31m-    {[m
+         s = s.substr(1, s.size() - 2);[m
+[31m-    }[m
+ [m
+     return s;[m
+ }[m
+[36m@@ -180,9 +167,7 @@[m [mstatic std::string defaultKeyPath()[m
+     std::string home = plat::homeDir();[m
+ [m
+     if (home.empty())[m
+[31m-    {[m
+         return "";[m
+[31m-    }[m
+ [m
+     std::string base = home + plat::PATH_SEP + ".ssh" + plat::PATH_SEP;[m
+ [m
+[36m@@ -191,9 +176,7 @@[m [mstatic std::string defaultKeyPath()[m
+     for (const char* name : names)[m
+     {[m
+         if (plat::fileExists(base + name))[m
+[31m-        {[m
+             return base + name;[m
+[31m-        }[m
+     }[m
+ [m
+     return base + "id_ed25519";[m
+[36m@@ -205,11 +188,7 @@[m [mstatic std::string toHex(const unsigned char* data, size_t len)[m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Updater[m
+[31m-//   Windows: SetupServerGuard.exe[m
+[31m-//   Linux:   update-serverguard.sh (run with /bin/sh)[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- updater ----------[m
+ [m
+ #ifdef _WIN32[m
+ static const char* UPDATER_NAME = "SetupServerGuard.exe";[m
+[36m@@ -278,9 +257,7 @@[m [mstatic bool runUpdater()[m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Profile storage (servers.cfg, tab separated)[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- profile storage (servers.cfg, tab separated) ----------[m
+ [m
+ static const std::string PROFILES_FILE =[m
+ plat::joinPath(plat::appDataDir(), "servers.cfg");[m
+[36m@@ -319,7 +296,7 @@[m [mstatic bool saveProfiles(const std::vector<Config>& list)[m
+         }[m
+     }[m
+ [m
+[31m-    plat::restrictFile(PROFILES_FILE);   // chmod 600 on Linux[m
+[32m+[m[32m    plat::restrictFile(PROFILES_FILE);[m
+ [m
+     return true;[m
+ }[m
+[36m@@ -386,7 +363,7 @@[m [mstatic std::vector<Config> loadProfiles()[m
+     return list;[m
+ }[m
+ [m
+[31m-// Import of the old single-server file (server.cfg)[m
+[32m+[m[32m// Imports the old single-server file (server.cfg).[m
+ static void migrateLegacyConfig()[m
+ {[m
+     if (plat::fileExists(PROFILES_FILE) || !plat::fileExists(LEGACY_FILE))[m
+[36m@@ -461,9 +438,7 @@[m [mstatic void ensureProfilesFile()[m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Profile editor[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- profile editor ----------[m
+ [m
+ static bool editProfile(Config& cfg, bool isNew)[m
+ {[m
+[36m@@ -623,9 +598,7 @@[m [mstatic bool editProfile(Config& cfg, bool isNew)[m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Host key verification[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- host key verification ----------[m
+ [m
+ bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)[m
+ {[m
+[36m@@ -815,14 +788,11 @@[m [mbool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)[m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Authentication[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- authentication ----------[m
+ [m
+ struct KbdContext[m
+ {[m
+     const std::string* password = nullptr;[m
+[31m-[m
+     bool passwordUsed = false;[m
+ };[m
+ [m
+[36m@@ -840,14 +810,10 @@[m [mstatic void kbdCallback([m
+         abstract ? static_cast<KbdContext*>(*abstract) : nullptr;[m
+ [m
+     if (name && name_len > 0)[m
+[31m-    {[m
+         std::cout << "\n" << std::string(name, name_len) << "\n";[m
+[31m-    }[m
+ [m
+     if (instruction && instruction_len > 0)[m
+[31m-    {[m
+         std::cout << std::string(instruction, instruction_len) << "\n";[m
+[31m-    }[m
+ [m
+     for (int i = 0; i < num_prompts; i++)[m
+     {[m
+[36m@@ -861,15 +827,13 @@[m [mstatic void kbdCallback([m
+         bool isPassword =[m
+             toLower(prompt).find("password") != std::string::npos;[m
+ [m
+[31m-        if ([m
+[31m-            isPassword &&[m
+[32m+[m[32m        if (isPassword &&[m
+             ctx &&[m
+             ctx->password &&[m
+             !ctx->password->empty() &&[m
+             !ctx->passwordUsed)[m
+         {[m
+             answer = *ctx->password;[m
+[31m-[m
+             ctx->passwordUsed = true;[m
+         }[m
+         else[m
+[36m@@ -881,16 +845,13 @@[m [mstatic void kbdCallback([m
+         }[m
+ [m
+         responses[i].text = plat::cstrdup(answer.c_str());[m
+[31m-[m
+[31m-        responses[i].length =[m
+[31m-            static_cast<unsigned int>(answer.size());[m
+[32m+[m[32m        responses[i].length = static_cast<unsigned int>(answer.size());[m
+     }[m
+ }[m
+ [m
+ static void printSessionError(LIBSSH2_SESSION* session)[m
+ {[m
+     char* message = nullptr;[m
+[31m-[m
+     int length = 0;[m
+ [m
+     int code =[m
+[36m@@ -946,7 +907,6 @@[m [mstatic bool authPublicKey(LIBSSH2_SESSION* session, const Config& cfg)[m
+     if (cfg.keyPath.empty())[m
+     {[m
+         std::cout << "Private key path is not set.\n";[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1007,7 +967,6 @@[m [mstatic bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)[m
+     if (!agent)[m
+     {[m
+         std::cout << "Cannot initialize SSH agent support.\n";[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1025,7 +984,6 @@[m [mstatic bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)[m
+ #endif[m
+ [m
+         libssh2_agent_free(agent);[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1061,11 +1019,10 @@[m [mstatic bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)[m
+ [m
+         anyIdentity = true;[m
+ [m
+[31m-        if ([m
+[31m-            libssh2_agent_userauth([m
+[31m-                agent,[m
+[31m-                cfg.username.c_str(),[m
+[31m-                identity) == 0)[m
+[32m+[m[32m        if (libssh2_agent_userauth([m
+[32m+[m[32m            agent,[m
+[32m+[m[32m            cfg.username.c_str(),[m
+[32m+[m[32m            identity) == 0)[m
+         {[m
+             std::cout[m
+                 << "Agent key accepted: "[m
+[36m@@ -1073,7 +1030,6 @@[m [mstatic bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)[m
+                 << "\n";[m
+ [m
+             authenticated = true;[m
+[31m-[m
+             break;[m
+         }[m
+ [m
+[36m@@ -1086,9 +1042,7 @@[m [mstatic bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)[m
+     }[m
+ [m
+     if (!anyIdentity)[m
+[31m-    {[m
+         std::cout << "SSH agent has no keys loaded.\n";[m
+[31m-    }[m
+ [m
+     libssh2_agent_disconnect(agent);[m
+     libssh2_agent_free(agent);[m
+[36m@@ -1171,9 +1125,7 @@[m [mbool authenticate(LIBSSH2_SESSION* session, const Config& cfg)[m
+ [m
+         if (!supports("publickey"))[m
+         {[m
+[31m-            std::cout[m
+[31m-                << "The server does not allow public key login.\n";[m
+[31m-[m
+[32m+[m[32m            std::cout << "The server does not allow public key login.\n";[m
+             return false;[m
+         }[m
+ [m
+[36m@@ -1183,9 +1135,7 @@[m [mbool authenticate(LIBSSH2_SESSION* session, const Config& cfg)[m
+ [m
+         if (!supports("publickey"))[m
+         {[m
+[31m-            std::cout[m
+[31m-                << "The server does not allow public key login.\n";[m
+[31m-[m
+[32m+[m[32m            std::cout << "The server does not allow public key login.\n";[m
+             return false;[m
+         }[m
+ [m
+[36m@@ -1209,9 +1159,7 @@[m [mbool authenticate(LIBSSH2_SESSION* session, const Config& cfg)[m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Connection[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- connection ----------[m
+ [m
+ static void closeConnection([m
+     LIBSSH2_SESSION*& session,[m
+[36m@@ -1222,19 +1170,15 @@[m [mstatic void closeConnection([m
+     if (session)[m
+     {[m
+         if (sendDisconnect)[m
+[31m-        {[m
+             libssh2_session_disconnect(session, reason);[m
+[31m-        }[m
+ [m
+         libssh2_session_free(session);[m
+[31m-[m
+         session = nullptr;[m
+     }[m
+ [m
+     if (sock != INVALID_SOCKET)[m
+     {[m
+         closesocket(sock);[m
+[31m-[m
+         sock = INVALID_SOCKET;[m
+     }[m
+ }[m
+[36m@@ -1249,23 +1193,19 @@[m [mbool openConnection([m
+     if (sock == INVALID_SOCKET)[m
+     {[m
+         std::cout << "\nCannot create socket.\n";[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+     sockaddr_in sin{};[m
+ [m
+     sin.sin_family = AF_INET;[m
+[31m-[m
+[31m-    sin.sin_port =[m
+[31m-        htons(static_cast<unsigned short>(cfg.port));[m
+[32m+[m[32m    sin.sin_port = htons(static_cast<unsigned short>(cfg.port));[m
+ [m
+     if (inet_pton(AF_INET, cfg.host.c_str(), &sin.sin_addr) <= 0)[m
+     {[m
+         std::cout << "\nInvalid server IP.\n";[m
+ [m
+         closeConnection(session, sock, "", false);[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1287,7 +1227,6 @@[m [mbool openConnection([m
+             << ").\n";[m
+ [m
+         closeConnection(session, sock, "", false);[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1300,7 +1239,6 @@[m [mbool openConnection([m
+         std::cout << "Cannot create SSH session.\n";[m
+ [m
+         closeConnection(session, sock, "", false);[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1316,7 +1254,6 @@[m [mbool openConnection([m
+             << ").\n";[m
+ [m
+         closeConnection(session, sock, "", false);[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1327,7 +1264,6 @@[m [mbool openConnection([m
+         std::cout << "\nHost key is not trusted. Connection aborted.\n";[m
+ [m
+         closeConnection(session, sock, "Host key rejected", true);[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1336,7 +1272,6 @@[m [mbool openConnection([m
+         std::cout << "\nAuthentication failed.\n";[m
+ [m
+         closeConnection(session, sock, "Authentication failed", true);[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1346,9 +1281,7 @@[m [mbool openConnection([m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Remote commands[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- remote commands ----------[m
+ [m
+ bool executeCommand([m
+     LIBSSH2_SESSION* session,[m
+[36m@@ -1357,7 +1290,6 @@[m [mbool executeCommand([m
+     if (!session)[m
+     {[m
+         std::cout << "SSH session is not available.\n";[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1367,7 +1299,6 @@[m [mbool executeCommand([m
+     if (!channel)[m
+     {[m
+         std::cout << "Cannot open SSH channel.\n";[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1376,7 +1307,6 @@[m [mbool executeCommand([m
+         std::cout << "Cannot execute command.\n";[m
+ [m
+         libssh2_channel_free(channel);[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1390,7 +1320,6 @@[m [mbool executeCommand([m
+         if (rc > 0)[m
+         {[m
+             buffer[rc] = '\0';[m
+[31m-[m
+             std::cout << buffer;[m
+         }[m
+         else if (rc == 0)[m
+[36m@@ -1400,7 +1329,6 @@[m [mbool executeCommand([m
+         else[m
+         {[m
+             std::cout << "\nError reading server response.\n";[m
+[31m-[m
+             break;[m
+         }[m
+     }[m
+[36m@@ -1422,7 +1350,6 @@[m [mbool changeDirectory([m
+     if (!session)[m
+     {[m
+         std::cout << "SSH session is not available.\n";[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1453,7 +1380,6 @@[m [mbool changeDirectory([m
+     if (!channel)[m
+     {[m
+         std::cout << "Cannot open SSH channel.\n";[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1462,7 +1388,6 @@[m [mbool changeDirectory([m
+         std::cout << "Cannot change directory.\n";[m
+ [m
+         libssh2_channel_free(channel);[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1478,7 +1403,6 @@[m [mbool changeDirectory([m
+         if (rc > 0)[m
+         {[m
+             buffer[rc] = '\0';[m
+[31m-[m
+             result += buffer;[m
+         }[m
+         else[m
+[36m@@ -1493,8 +1417,7 @@[m [mbool changeDirectory([m
+ [m
+     libssh2_channel_free(channel);[m
+ [m
+[31m-    while ([m
+[31m-        !result.empty() &&[m
+[32m+[m[32m    while (!result.empty() &&[m
+         (result.back() == '\n' || result.back() == '\r'))[m
+     {[m
+         result.pop_back();[m
+[36m@@ -1503,7 +1426,6 @@[m [mbool changeDirectory([m
+     if (result.empty())[m
+     {[m
+         std::cout << "Directory does not exist.\n";[m
+[31m-[m
+         return false;[m
+     }[m
+ [m
+[36m@@ -1513,9 +1435,7 @@[m [mbool changeDirectory([m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Server terminal[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- server terminal ----------[m
+ [m
+ void runServerTerminal([m
+     LIBSSH2_SESSION* session,[m
+[36m@@ -1530,7 +1450,8 @@[m [mvoid runServerTerminal([m
+     FileGuard fileGuard(session, cfg.password);[m
+ [m
+     std::cout << "\n";[m
+[31m-    std::cout << "ServerGuard terminal - " << cfg.name << "\n";[m
+[32m+[m[32m    std::cout << "ServerGuard v" << SERVERGUARD_VERSION[m
+[32m+[m[32m        << " terminal - " << cfg.name << "\n";[m
+     std::cout << "Type 'help' to show all commands and modules.\n";[m
+     std::cout << "Type 'ls' to list files.\n";[m
+     std::cout << "Type 'pwd' to show current directory.\n";[m
+[36m@@ -1575,21 +1496,16 @@[m [mvoid runServerTerminal([m
+         command = trim(command);[m
+ [m
+         if (command.empty())[m
+[31m-        {[m
+             continue;[m
+[31m-        }[m
+ [m
+         if (command == "exit" || command == "servers")[m
+[31m-        {[m
+             break;[m
+[31m-        }[m
+ [m
+         try[m
+         {[m
+             if (command == "help")[m
+             {[m
+                 showHelp();[m
+[31m-[m
+                 continue;[m
+             }[m
+ [m
+[36m@@ -1672,8 +1588,7 @@[m [mvoid runServerTerminal([m
+                 continue;[m
+             }[m
+ [m
+[31m-            if ([m
+[31m-                command == "sshkeys" ||[m
+[32m+[m[32m            if (command == "sshkeys" ||[m
+                 command == "ssh-key-guard" ||[m
+                 command == "sshkeyguard")[m
+             {[m
+[36m@@ -1688,7 +1603,6 @@[m [mvoid runServerTerminal([m
+             if (command == "fileguard")[m
+             {[m
+                 fileGuard.menu();[m
+[31m-[m
+                 continue;[m
+             }[m
+ [m
+[36m@@ -1717,9 +1631,7 @@[m [mvoid runServerTerminal([m
+                 std::string directory = trim(command.substr(3));[m
+ [m
+                 if (directory.empty())[m
+[31m-                {[m
+                     continue;[m
+[31m-                }[m
+ [m
+                 changeDirectory(session, currentDirectory, directory);[m
+ [m
+[36m@@ -1748,9 +1660,7 @@[m [mvoid runServerTerminal([m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  One connected session (modules + terminal + cleanup)[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- one connected session ----------[m
+ [m
+ static void runSession(Config& cfg, SOCKET& sock, LIBSSH2_SESSION*& session)[m
+ {[m
+[36m@@ -1841,9 +1751,7 @@[m [mstatic void runSession(Config& cfg, SOCKET& sock, LIBSSH2_SESSION*& session)[m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Connect to a profile (with retry / edit / back)[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- connecting to a profile ----------[m
+ [m
+ enum class FailAction[m
+ {[m
+[36m@@ -1998,15 +1906,14 @@[m [mstatic void connectToServer(std::vector<Config>& all, size_t index)[m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  Server list (main menu)[m
+[31m-// ============================================================[m
+[32m+[m[32m// ---------- server list (main menu) ----------[m
+ [m
+ static void printServerList(const std::vector<Config>& list)[m
+ {[m
+     std::cout << "\n";[m
+     std::cout << "=========================================================\n";[m
+[31m-    std::cout << "                  SERVERGUARD - MY SERVERS\n";[m
+[32m+[m[32m    std::cout << "            SERVERGUARD v" << SERVERGUARD_VERSION[m
+[32m+[m[32m        << " - MY SERVERS\n";[m
+     std::cout << "=========================================================\n";[m
+ [m
+     if (list.empty())[m
+[36m@@ -2090,9 +1997,7 @@[m [mstatic void serverMenu()[m
+         std::string lc = toLower(input);[m
+ [m
+         if (lc == "q" || lc == "quit" || lc == "exit")[m
+[31m-        {[m
+             return;[m
+[31m-        }[m
+ [m
+         if (lc == "a" || lc == "add")[m
+         {[m
+[36m@@ -2196,29 +2101,32 @@[m [mstatic void serverMenu()[m
+ }[m
+ [m
+ [m
+[31m-// ============================================================[m
+[31m-//  main[m
+[31m-// ============================================================[m
+[31m-[m
+ int main(int argc, char** argv)[m
+ {[m
+[31m-    (void)argc;[m
+[31m-    (void)argv;[m
+[32m+[m[32m    if (argc > 1)[m
+[32m+[m[32m    {[m
+[32m+[m[32m        std::string arg = argv[1];[m
+[32m+[m
+[32m+[m[32m        if (arg == "--version" || arg == "-v")[m
+[32m+[m[32m        {[m
+[32m+[m[32m            std::cout << "ServerGuard " << SERVERGUARD_VERSION << "\n";[m
+[32m+[m[32m            return 0;[m
+[32m+[m[32m        }[m
+[32m+[m[32m    }[m
+ [m
+     std::cout << "=============================\n";[m
+     std::cout << "        ServerGuard\n";[m
+[32m+[m[32m    std::cout << "        version " << SERVERGUARD_VERSION << "\n";[m
+     std::cout << "=============================\n";[m
+ [m
+ #ifndef _WIN32[m
+     // Linux: check for a new version, install it and restart.[m
+[31m-    // Returns normally if there is no update or anything fails.[m
+     upd::checkAndUpdate(SERVERGUARD_VERSION, argv);[m
+ #endif[m
+ [m
+     if (!plat::initNetwork())[m
+     {[m
+         std::cout << "Network initialization failed.\n";[m
+[31m-[m
+         return 1;[m
+     }[m
+ [m
+[36m@@ -2227,7 +2135,6 @@[m [mint main(int argc, char** argv)[m
+         std::cout << "libssh2 initialization failed.\n";[m
+ [m
+         plat::cleanupNetwork();[m
+[31m-[m
+         return 1;[m
+     }[m
+ [m
+[36m@@ -2253,7 +2160,6 @@[m [mint main(int argc, char** argv)[m
+ [m
+     plat::cleanupNetwork();[m
+ [m
+[31m-    // On Linux runUpdater() replaces this process with the updater script.[m
+     if (g_updateRequested)[m
+     {[m
+         if (!runUpdater())[m
+[1mdiff --git a/ServerProject/nfpm.yaml b/ServerProject/nfpm.yaml[m
+[1mindex 320c2ae..82f2e28 100644[m
+[1m--- a/ServerProject/nfpm.yaml[m
+[1m+++ b/ServerProject/nfpm.yaml[m
+[36m@@ -1,7 +1,7 @@[m
+ name: serverguard[m
+ arch: amd64[m
+ platform: linux[m
+[31m-version: 1.1.10[m
+[32m+[m[32mversion: 1.1.9[m
+ release: 1[m
+ section: admin[m
+ priority: optional[m
+[36m@@ -13,7 +13,7 @@[m [mlicense: Proprietary[m
+ [m
+ contents:[m
+   # Main executable[m
+[31m-  - src: build-linux/ServerGuard.stripped[m
+[32m+[m[32m  - src: dist/1.1.9/linux-x64/ServerGuard[m
+     dst: /usr/bin/serverguard[m
+     file_info:[m
+       mode: 0755[m

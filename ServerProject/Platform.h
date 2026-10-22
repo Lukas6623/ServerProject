@@ -1,11 +1,5 @@
+
 #pragma once
-// ============================================================
-//  Platform.h - cross-platform layer for ServerGuard
-//  (Windows + Linux). ALL OS-specific code lives here.
-//  Other files must include this header instead of
-//  <winsock2.h>, <windows.h>, <wincrypt.h>, <shellapi.h> etc.
-//  See PORTING_GUIDE.md for the rules.
-// ============================================================
 
 #include <string>
 #include <vector>
@@ -58,10 +52,9 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
-// Winsock-compatible names so existing socket code compiles unchanged
 typedef int SOCKET;
 #define INVALID_SOCKET (-1)
-#define SOCKET_ERROR   (-1)
+#define SOCKET_ERROR (-1)
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
@@ -83,9 +76,6 @@ namespace plat
     constexpr bool IS_WINDOWS = false;
 #endif
 
-    // ------------------------------------------------------------
-    // Network init / cleanup
-    // ------------------------------------------------------------
     inline bool initNetwork()
     {
 #ifdef _WIN32
@@ -104,7 +94,6 @@ namespace plat
 #endif
     }
 
-    // Non-blocking mode for a socket.
     inline bool setNonBlocking(SOCKET s, bool enable)
     {
 #ifdef _WIN32
@@ -112,6 +101,7 @@ namespace plat
         return ioctlsocket(s, FIONBIO, &mode) == 0;
 #else
         int flags = fcntl(s, F_GETFL, 0);
+
         if (flags < 0)
             return false;
 
@@ -120,7 +110,6 @@ namespace plat
 #endif
     }
 
-    // Shut down both directions of a socket.
     inline int shutdownBoth(SOCKET s)
     {
 #ifdef _WIN32
@@ -130,11 +119,11 @@ namespace plat
 #endif
     }
 
-    // Prevent another process from binding the same port.
     inline bool setExclusiveAddrUse(SOCKET s)
     {
 #ifdef _WIN32
         BOOL exclusive = TRUE;
+
         return setsockopt(
             s,
             SOL_SOCKET,
@@ -156,11 +145,6 @@ namespace plat
 #endif
     }
 
-    // ------------------------------------------------------------
-    // Environment / paths / files
-    // ------------------------------------------------------------
-
-    // Read an environment variable without triggering MSVC C4996.
     inline std::string getEnv(const char* name)
     {
         if (name == nullptr)
@@ -205,7 +189,6 @@ namespace plat
         return f.good();
     }
 
-    // Delete a file. Returns true on success.
     inline bool removeFile(const std::string& path)
     {
 #ifdef _WIN32
@@ -215,7 +198,6 @@ namespace plat
 #endif
     }
 
-    // Creates a uniquely named temporary file.
     inline std::string makeTempFile(const std::string& prefix)
     {
 #ifdef _WIN32
@@ -234,7 +216,9 @@ namespace plat
 
         if (!GetTempFileNameA(
             dir, shortPrefix.c_str(), 0, file))
+        {
             return {};
+        }
 
         return std::string(file);
 #else
@@ -258,7 +242,6 @@ namespace plat
 #endif
     }
 
-    // Download URL to path.
     inline bool downloadFile(
         const std::string& url,
         const std::string& path,
@@ -310,7 +293,6 @@ namespace plat
 #endif
     }
 
-    // Home directory.
     inline std::string homeDir()
     {
 #ifdef _WIN32
@@ -320,7 +302,6 @@ namespace plat
 #endif
     }
 
-    // Directory of the running executable.
     inline std::string exeDirectory()
     {
 #ifdef _WIN32
@@ -348,7 +329,6 @@ namespace plat
             : full.substr(0, slash);
     }
 
-    // Per-user application data folder.
     inline std::string appDataDir()
     {
         static std::string dir;
@@ -409,7 +389,6 @@ namespace plat
         return dir;
     }
 
-    // Make a file readable only by the current user.
     inline void restrictFile(const std::string& path)
     {
 #ifndef _WIN32
@@ -419,7 +398,6 @@ namespace plat
 #endif
     }
 
-    // Atomically replace destination with source.
     inline bool replaceFile(
         const std::string& src,
         const std::string& dst)
@@ -443,10 +421,6 @@ namespace plat
 #endif
     }
 
-    // ------------------------------------------------------------
-    // Misc helpers
-    // ------------------------------------------------------------
-
     inline char* cstrdup(const char* s)
     {
 #ifdef _WIN32
@@ -469,7 +443,6 @@ namespace plat
 #endif
     }
 
-    // Open a URL in the default browser.
     inline bool openUrl(const std::string& url)
     {
 #ifdef _WIN32
@@ -522,7 +495,6 @@ namespace plat
 #endif
     }
 
-    // Start the updater/installer.
     inline bool launchUpdater(
         const std::string& path,
         const std::string& workDir)
@@ -543,7 +515,6 @@ namespace plat
             path.c_str(),
             static_cast<char*>(nullptr));
 
-        // Reached only if execl() fails.
         std::cerr << "Failed to launch updater: "
             << path << " (errno " << errno << ")\n";
 
@@ -551,9 +522,6 @@ namespace plat
 #endif
     }
 
-    // ------------------------------------------------------------
-    // Hidden console input (passwords)
-    // ------------------------------------------------------------
     inline std::string readSecret(const std::string& prompt)
     {
         std::cout << prompt;
@@ -604,9 +572,6 @@ namespace plat
         return line;
     }
 
-    // ------------------------------------------------------------
-    // Secret storage
-    // ------------------------------------------------------------
     inline std::string hexEncode(
         const unsigned char* data,
         size_t len)
@@ -900,11 +865,6 @@ namespace plat
     }
 
 #ifndef _WIN32
-    // ------------------------------------------------------------
-    // Process / updater helpers (Linux)
-    // ------------------------------------------------------------
-
-    // Full path of the running executable.
     inline std::string exePath()
     {
         char path[PATH_MAX] = {};
@@ -914,13 +874,13 @@ namespace plat
             return {};
 
         std::string full(path, static_cast<size_t>(n));
-
-        // After a package upgrade the kernel appends " (deleted)"
         const std::string suffix = " (deleted)";
 
         if (full.size() > suffix.size() &&
-            full.compare(full.size() - suffix.size(),
-                suffix.size(), suffix) == 0)
+            full.compare(
+                full.size() - suffix.size(),
+                suffix.size(),
+                suffix) == 0)
         {
             full.resize(full.size() - suffix.size());
         }
@@ -933,13 +893,15 @@ namespace plat
         return geteuid() == 0;
     }
 
-    // Find an executable in PATH. Returns "" if not found.
     inline std::string findInPath(const std::string& name)
     {
         std::string pathEnv = getEnv("PATH");
 
         if (pathEnv.empty())
-            pathEnv = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+        {
+            pathEnv =
+                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+        }
 
         size_t start = 0;
 
@@ -966,13 +928,13 @@ namespace plat
         return {};
     }
 
-    // Run a program and wait. Returns exit code, or -1 on failure.
     inline int runProcess(const std::vector<std::string>& args)
     {
         if (args.empty())
             return -1;
 
         std::vector<char*> argv;
+        argv.reserve(args.size() + 1);
 
         for (const std::string& a : args)
             argv.push_back(const_cast<char*>(a.c_str()));
@@ -1003,7 +965,6 @@ namespace plat
         return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     }
 
-    // SHA-256 of a file as lowercase hex ("" on error).
     inline std::string sha256File(const std::string& path)
     {
         std::ifstream f(path, std::ios::binary);
@@ -1020,7 +981,6 @@ namespace plat
         unsigned int mdLen = 0;
 
         bool ok = EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1;
-
         char buf[65536];
 
         while (ok && f)
@@ -1029,7 +989,10 @@ namespace plat
             std::streamsize n = f.gcount();
 
             if (n > 0)
-                ok = EVP_DigestUpdate(ctx, buf, static_cast<size_t>(n)) == 1;
+            {
+                ok = EVP_DigestUpdate(
+                    ctx, buf, static_cast<size_t>(n)) == 1;
+            }
         }
 
         if (ok)
@@ -1040,14 +1003,13 @@ namespace plat
         return ok ? hexEncode(md, mdLen) : std::string();
     }
 
-    // Replace the current process with itself (after an update).
     inline bool restartSelf(const std::string& exe, char** argv)
     {
         std::cout.flush();
-        setenv("SERVERGUARD_UPDATED", "1", 1);   // prevents update loops
+        setenv("SERVERGUARD_UPDATED", "1", 1);
         execv(exe.c_str(), argv);
-        return false;                            // only if execv failed
+        return false;
     }
 #endif
 
-} // namespace plat
+}

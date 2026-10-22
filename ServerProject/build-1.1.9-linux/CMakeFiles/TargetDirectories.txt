@@ -1,0 +1,7 @@
+/mnt/d/ServerProject/ServerProject/build-1.1.9-linux/CMakeFiles/ServerGuard.dir
+/mnt/d/ServerProject/ServerProject/build-1.1.9-linux/CMakeFiles/edit_cache.dir
+/mnt/d/ServerProject/ServerProject/build-1.1.9-linux/CMakeFiles/rebuild_cache.dir
+/mnt/d/ServerProject/ServerProject/build-1.1.9-linux/CMakeFiles/list_install_components.dir
+/mnt/d/ServerProject/ServerProject/build-1.1.9-linux/CMakeFiles/install.dir
+/mnt/d/ServerProject/ServerProject/build-1.1.9-linux/CMakeFiles/install/local.dir
+/mnt/d/ServerProject/ServerProject/build-1.1.9-linux/CMakeFiles/install/strip.dir

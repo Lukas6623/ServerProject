@@ -1,5 +1,3 @@
-// WebServer.cpp - cross-platform (Windows + Linux).
-// All OS-specific headers/functions come from Platform.h (via WebServer.h).
 
 #include "WebServer.h"
 #include "SSHKeyGuard.h"
@@ -35,13 +33,9 @@ static const std::string FILEGUARD_EVENTS = FILEGUARD_DATA_DIR + "file_events.js
 static const std::string FILEGUARD_BASELINE = FILEGUARD_DATA_DIR + "fileguard_baseline.json";
 static const std::string FILEGUARD_STATE = FILEGUARD_DATA_DIR + "fileguard_state.json";
 
-// ------------------------------------------------------------
-//  Socket helpers (thin wrappers over Platform.h)
-// ------------------------------------------------------------
-
 static int webSocketError()
 {
-    return WSAGetLastError();   // on Linux: inline wrapper over errno
+    return WSAGetLastError();
 }
 
 static void closeWebSocket(SOCKET socketHandle)
@@ -99,10 +93,6 @@ static void setSocketTimeouts(SOCKET socketHandle)
 #endif
 }
 
-// ------------------------------------------------------------
-//  String helpers
-// ------------------------------------------------------------
-
 static std::string toLower(std::string value)
 {
     std::transform(
@@ -157,9 +147,7 @@ static bool safeEquals(const std::string& a, const std::string& b)
     unsigned char diff = 0;
 
     for (size_t i = 0; i < a.size(); ++i)
-    {
         diff |= static_cast<unsigned char>(a[i] ^ b[i]);
-    }
 
     return diff == 0;
 }
@@ -251,10 +239,6 @@ static std::string statusText(int status)
     default: return "Error";
     }
 }
-
-// ------------------------------------------------------------
-//  WebServer
-// ------------------------------------------------------------
 
 WebServer::WebServer(
     const std::string& webRoot,
@@ -472,7 +456,6 @@ bool WebServer::start()
     return true;
 }
 
-
 bool WebServer::isRunning() const
 {
     return running.load();
@@ -505,7 +488,7 @@ void WebServer::serverLoop()
             if (!running.load())
                 break;
 
-            plat::sleepMs(10);   // avoid busy loop on EMFILE etc.
+            plat::sleepMs(10);
             continue;
         }
 
@@ -541,8 +524,6 @@ void WebServer::serverLoop()
             {
                 handleClient(clientSocket);
 
-                // close + erase under one lock: stop() never calls
-                // shutdown() on an already reused descriptor
                 std::lock_guard<std::mutex> lock(clientsMutex);
                 closeWebSocket(clientSocket);
                 clients.erase(clientSocket);
@@ -739,7 +720,8 @@ bool WebServer::isAuthorized(const HttpRequest& request) const
 
     while (position != std::string::npos)
     {
-        if (position == 0 || cookie[position - 1] == ';' ||
+        if (position == 0 ||
+            cookie[position - 1] == ';' ||
             cookie[position - 1] == ' ')
         {
             size_t valueStart = position + wanted.size();

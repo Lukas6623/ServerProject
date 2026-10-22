@@ -10,21 +10,34 @@
 #include <string>
 #include <thread>
 
-// ============================================================================
-// Внутренние помощники (виден только в этом .cpp, заголовки менять не нужно).
-// Они не используют shellQuote/trim из TelegramBotInternal.h, поэтому не
-// зависят от того, как эти функции объявлены.
-// ============================================================================
+static const char* MODULE_NAME = "ServerGuard Telegram Bot";
+static const char* MODULE_VERSION = "1.0.0";
+
+struct ModuleCommand
+{
+    const char* key;
+    const char* title;
+};
+
+static const ModuleCommand MODULE_COMMANDS[] = {
+    { "1",  "Install / configure bot" },
+    { "2",  "Start bot" },
+    { "3",  "Stop bot" },
+    { "4",  "Restart bot" },
+    { "5",  "Check status" },
+    { "6",  "Show logs" },
+    { "7",  "Generate verification code" },
+    { "8",  "Disable automatic startup" },
+    { "9",  "Update bot" },
+    { "10", "Remove bot" },
+    { "0",  "Back" },
+};
+
 namespace
 {
-    // Верхняя граница времени выполнения одной удалённой команды
-    // (apt-get / pip могут работать долго, но не бесконечно).
     constexpr int  SG_COMMAND_TIMEOUT_SEC = 1200;
-    // Короткие служебные проверки (id -u, sudo -n true, sudo -v).
     constexpr int  SG_PROBE_TIMEOUT_SEC = 60;
-    // Таймаут блокирующих операций libssh2, мс.
     constexpr long SG_BLOCKING_TIMEOUT_MS = 10000;
-    // Сколько ждём, пока канал примет данные stdin (пароль sudo).
     constexpr int  SG_STDIN_WRITE_TIMEOUT_SEC = 10;
 
     void sgSleepMs(int milliseconds)
@@ -46,8 +59,6 @@ namespace
         return value.substr(first, last - first + 1);
     }
 
-    // Последняя непустая строка вывода (sudo может напечатать предупреждения
-    // ДО результата команды, поэтому нельзя разбирать вывод целиком).
     std::string sgLastLine(const std::string& text)
     {
         const std::size_t end = text.find_last_not_of(" \t\r\n");
@@ -62,9 +73,6 @@ namespace
         return sgTrim(text.substr(start, end - start + 1));
     }
 
-    // Ищет строку, которая НАЧИНАЕТСЯ с marker. Возвращает значение после
-    // маркера из ПОСЛЕДНЕЙ такой строки. Совпадения в середине строки
-    // (например, внутри диагностического сообщения) игнорируются.
     bool sgFindMarker(
         const std::string& text,
         const std::string& marker,
@@ -107,8 +115,6 @@ namespace
             output.find("a terminal is required to read the password") != std::string::npos;
     }
 
-    // Временно переводит SSH-сессию в блокирующий режим с таймаутом и
-    // восстанавливает прежние настройки при выходе.
     class SgSessionModeGuard
     {
     public:
@@ -163,14 +169,6 @@ namespace
         return text.str();
     }
 
-    // Выполняет одну команду в новом SSH-канале.
-    //  - stdout и stderr объединяются в output;
-    //  - stdinData (например, пароль sudo) передаётся в stdin, затем stdin закрывается,
-    //    чтобы удалённая команда никогда не ждала ввод;
-    //  - код возврата читается только ПОСЛЕ закрытия канала;
-    //  - чтение ограничено временем (нет бесконечного цикла на EAGAIN).
-    // Возвращает true, если команда была выполнена и получен код возврата
-    // (сам код возврата может быть ненулевым). false — ошибка транспорта/таймаут.
     bool sgRunChannel(
         LIBSSH2_SESSION* session,
         const std::string& command,
@@ -217,9 +215,6 @@ namespace
             return false;
         }
 
-        // Передаём stdin (пароль sudo). Ошибка записи не считается фатальной:
-        // если удалённая сторона уже закрыла канал, настоящая причина будет
-        // в выводе команды, который мы прочитаем ниже.
         std::size_t totalWritten = 0;
 
         const auto writeDeadline =
@@ -320,7 +315,6 @@ namespace
             return false;
         }
 
-        // Канал закрываем и ждём закрытия ДО чтения кода возврата.
         libssh2_channel_close(channel);
         libssh2_channel_wait_closed(channel);
 
@@ -365,13 +359,6 @@ TelegramBot::TelegramBot(LIBSSH2_SESSION* sshSession, const std::string& passwor
     sudoAuthenticated = false;
 }
 
-// Состояние привилегий:
-//   sudoAuthenticated == true  -> права уже определены и подтверждены
-//                                 (root, либо sudo работает);
-//   sudoRequired == true       -> SSH-пользователь не root, команды с
-//                                 useSudo=true нужно выполнять через sudo.
-// Если useSudo=true, а права ещё не определены, executeRemote() определяет
-// их сам (раньше команда молча выполнялась от обычного пользователя).
 bool TelegramBot::executeRemote(
     const std::string& command,
     std::string& output,
@@ -400,16 +387,12 @@ bool TelegramBot::executeRemote(
 
     if (!elevate)
     {
-        // root, либо команде права администратора не нужны.
         if (!sgRunChannel(session, command, std::string(), SG_COMMAND_TIMEOUT_SEC, output, exitCode))
             return false;
 
         return exitCode == 0;
     }
 
-    // Сначала sudo без пароля (NOPASSWD или действующий кэш sudo).
-    // Если sudo отказывает до запуска команды, команда НЕ выполнялась,
-    // поэтому повтор с паролем безопасен.
     const std::string quotedCommand = shellQuote(command);
 
     if (!sgRunChannel(
@@ -431,7 +414,6 @@ bool TelegramBot::executeRemote(
             return false;
         }
 
-        // Пароль идёт через stdin (-S), а не через аргументы команды.
         if (!sgRunChannel(
             session,
             "sudo -S -p '' -H bash -c " + quotedCommand,
@@ -473,7 +455,6 @@ bool TelegramBot::authenticateSudo()
         return false;
     }
 
-    // sudo/sshd могут напечатать предупреждения, поэтому берём последнюю строку.
     const std::string uidText = sgLastLine(output);
     long uid = -1;
 
@@ -497,7 +478,6 @@ bool TelegramBot::authenticateSudo()
         return false;
     }
 
-    // root не нуждается в sudo.
     if (uid == 0)
     {
         sudoRequired = false;
@@ -507,11 +487,9 @@ bool TelegramBot::authenticateSudo()
         return true;
     }
 
-    // Не-root пользователь обязан использовать sudo.
     sudoRequired = true;
     sudoAuthenticated = false;
 
-    // 1) sudo без пароля (NOPASSWD, типично для azureuser).
     if (sgRunChannel(session, "sudo -n true", std::string(), SG_PROBE_TIMEOUT_SEC, output, exitCode) &&
         exitCode == 0)
     {
@@ -532,7 +510,6 @@ bool TelegramBot::authenticateSudo()
         return false;
     }
 
-    // 2) sudo с паролем через stdin.
     std::cout << "Authenticating sudo...\n";
 
     if (!sgRunChannel(
@@ -655,7 +632,6 @@ bool TelegramBot::installPythonDependencies()
 {
     std::cout << "\nChecking Python environment...\n";
 
-    // Проверка apt-get теперь выполняется ДО попытки что-либо установить.
     if (!commandExists("apt-get"))
     {
         std::cout << "apt-get not found.\n";
@@ -675,8 +651,6 @@ bool TelegramBot::installPythonDependencies()
     {
         std::cout << "Installing Python3, venv, pip, curl and unzip...\n";
 
-        // apt-get update выполняется один раз; Lock::Timeout ждёт, пока
-        // unattended-upgrades освободит блокировку dpkg.
         if (!executeRemote(
             "apt-get update -o DPkg::Lock::Timeout=300 && "
             "DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=300 "
@@ -700,7 +674,6 @@ bool TelegramBot::installPythonDependencies()
 
     std::string venvPython = TELEGRAM_VENV + "/bin/python";
 
-    // venv принадлежит root, поэтому проверки делаются с sudo.
     bool venvExists = executeRemote("test -x " + shellQuote(venvPython), output, exitCode, true);
 
     if (!venvExists)
@@ -777,7 +750,6 @@ bool TelegramBot::checkScript()
     std::string output;
     int exitCode = -1;
 
-    // Каталог принадлежит root, проверка выполняется с sudo.
     executeRemote("test -f " + shellQuote(TELEGRAM_SCRIPT), output, exitCode, true);
 
     return exitCode == 0;
@@ -844,7 +816,6 @@ bool TelegramBot::downloadRepositoryArchive(const std::string& archivePath)
         return false;
     }
 
-    // Размер файла — последняя строка вывода (до неё возможны предупреждения sudo).
     const std::string sizeText = sgLastLine(output);
 
     try
@@ -884,11 +855,6 @@ bool TelegramBot::extractRepository(
     std::string output;
     int exitCode = -1;
 
-    // Проверка целостности архива, распаковка, нормализация владельца и прав,
-    // поиск скрипта и определение каталога выполняются в одном вызове с правами
-    // администратора. Дерево принадлежит root и недоступно на запись
-    // обычному пользователю, поэтому подменить код до его установки нельзя.
-    // Путь выводится в отдельных строках-маркерах.
     const std::string command =
         "set -eu; "
         "rm -rf " + shellQuote(extractDirectory) + "; "
@@ -922,8 +888,6 @@ bool TelegramBot::extractRepository(
         return false;
     }
 
-    // Маркер принимается только в начале строки, поэтому диагностические
-    // сообщения не могут привести к неверному пути.
     std::string foundRoot;
 
     if (!sgFindMarker(output, "SERVERGUARD_REPOSITORY_ROOT=", foundRoot))
@@ -967,9 +931,6 @@ bool TelegramBot::validateRepository(const std::string& repositoryRoot)
     std::string output;
     int exitCode = -1;
 
-    // Каталог создан от root (через sudo), поэтому проверка тоже выполняется
-    // с правами администратора. Команда всегда завершается кодом 0:
-    // результат определяется по маркерам, а не по коду последней команды.
     const std::string checkCommand =
         "if [ -d " + shellQuote(repositoryRoot) + " ]; then "
         "echo 'REPOSITORY_DIRECTORY_EXISTS'; "
@@ -1022,7 +983,6 @@ bool TelegramBot::validateRepository(const std::string& repositoryRoot)
 
     std::cout << "\nChecking Python syntax for repository...\n";
 
-    // Проверка синтаксиса не исполняет код бота (только разбор AST).
     if (!checkPythonSyntax(mainScript))
     {
         std::cout << "ERROR: Python syntax validation failed.\n";
@@ -1043,9 +1003,6 @@ bool TelegramBot::setRepositoryPermissions()
     std::string output;
     int exitCode = -1;
 
-    // venv и queue пропускаются (-prune): раньше chmod 644 снимал бит
-    // исполнения с файлов в venv/bin и менял права файлов очереди.
-    // Все файлы принадлежат root, обычный SSH-пользователь не может их изменить.
     const std::string pruneVenvAndQueue =
         "\\( -path " + shellQuote(TELEGRAM_VENV) +
         " -o -path " + shellQuote(TELEGRAM_QUEUE) + " \\) -prune -o ";
@@ -1071,7 +1028,6 @@ bool TelegramBot::setRepositoryPermissions()
         return false;
     }
 
-    // Секреты: только root.
     command =
         "chmod 600 " + shellQuote(TELEGRAM_CONFIG) + " 2>/dev/null || true; "
         "chmod 600 " + shellQuote(TELEGRAM_VERIFICATION) + " 2>/dev/null || true; "
@@ -1185,8 +1141,6 @@ bool TelegramBot::configExists()
     std::string output;
     int exitCode = -1;
 
-    // Конфигурация лежит в каталоге root. Проверка без sudo на Azure могла
-    // дать ложное "не существует" и привести к повторному запросу токена.
     executeRemote("test -s " + shellQuote(TELEGRAM_CONFIG), output, exitCode, true);
 
     return exitCode == 0;
@@ -1247,8 +1201,6 @@ bool TelegramBot::createConfig()
     std::string config = "BOT_TOKEN=" + token + "\n";
     std::string encoded = base64Encode(config);
 
-    // umask 077: файл с токеном никогда не бывает читаемым для других,
-    // даже на короткое время до chmod.
     std::string command =
         "umask 077 && echo " + shellQuote(encoded) + " | base64 -d > " + shellQuote(TELEGRAM_CONFIG) +
         " && chmod 600 " + shellQuote(TELEGRAM_CONFIG) +
@@ -1501,9 +1453,6 @@ bool TelegramBot::checkPythonSyntax(const std::string& file)
 
     std::string python = TELEGRAM_VENV + "/bin/python";
 
-    // Файлы и venv принадлежат root, поэтому нужен sudo. Используется разбор
-    // AST: код бота НЕ исполняется и не импортируется, а py_compile больше не
-    // создаёт __pycache__ с файлами root внутри каталога бота.
     const std::string script =
         "import ast,sys; "
         "ast.parse(open(sys.argv[1],encoding=\"utf-8\").read(),sys.argv[1])";
@@ -1680,10 +1629,6 @@ bool TelegramBot::restoreTelegramCode()
     std::string output;
     int exitCode = -1;
 
-    // Сначала убеждаемся, что резервная копия существует (каталог принадлежит
-    // root, поэтому проверка с sudo), и только потом удаляем текущий код.
-    // Раньше код удалялся до проверки: если проверка падала, бот оставался
-    // без файлов.
     std::string command = "test -d " + shellQuote(TELEGRAM_CODE_BACKUP);
 
     if (!executeRemote(command, output, exitCode, true))
@@ -1729,7 +1674,6 @@ void TelegramBot::showUpdateLogs()
     std::string logs;
     int exitCode = -1;
 
-    // Журнал systemd доступен не каждому пользователю, поэтому с sudo.
     executeRemote("journalctl -u " + TELEGRAM_SERVICE + " -n 50 --no-pager", logs, exitCode, true);
 
     if (!logs.empty())
@@ -1749,27 +1693,24 @@ void TelegramBot::menu()
     {
         std::cout << "\n";
         std::cout << "============================================\n";
-        std::cout << "             TELEGRAM BOT\n";
+        std::cout << " " << MODULE_NAME << " v" << MODULE_VERSION << "\n";
         std::cout << "============================================\n\n";
 
-        bool active = serviceIsActive();
+        const bool active = serviceIsActive();
 
         std::cout << "Telegram bot: " << (active ? "ACTIVE" : "INACTIVE") << "\n\n";
-        std::cout << "1. Install / configure bot\n";
-        std::cout << "2. Generate verification code\n";
-        std::cout << "3. Start bot\n";
-        std::cout << "4. Stop bot\n";
-        std::cout << "5. Restart bot\n";
-        std::cout << "6. Disable automatic startup\n";
-        std::cout << "7. Update bot\n";
-        std::cout << "8. Check status\n";
-        std::cout << "9. Show logs\n";
-        std::cout << "10. Remove bot\n";
-        std::cout << "0. Back\n\n";
-        std::cout << "Select: ";
+
+        for (const ModuleCommand& item : MODULE_COMMANDS)
+        {
+            std::cout << item.key << ". " << item.title << "\n";
+        }
+
+        std::cout << "\nSelect: ";
 
         std::string choice;
-        std::getline(std::cin >> std::ws, choice);
+
+        if (!std::getline(std::cin >> std::ws, choice))
+            return;
 
         if (choice == "1")
         {
@@ -1778,12 +1719,6 @@ void TelegramBot::menu()
         }
 
         if (choice == "2")
-        {
-            generateCode();
-            continue;
-        }
-
-        if (choice == "3")
         {
             if (!serviceExists())
             {
@@ -1804,7 +1739,7 @@ void TelegramBot::menu()
             continue;
         }
 
-        if (choice == "4")
+        if (choice == "3")
         {
             if (!serviceExists())
             {
@@ -1818,7 +1753,7 @@ void TelegramBot::menu()
             continue;
         }
 
-        if (choice == "5")
+        if (choice == "4")
         {
             if (!serviceExists())
             {
@@ -1836,27 +1771,7 @@ void TelegramBot::menu()
             continue;
         }
 
-        if (choice == "6")
-        {
-            if (!serviceExists())
-            {
-                std::cout << "\nTelegram bot is not installed.\n";
-                continue;
-            }
-
-            if (disableService())
-                std::cout << "Automatic startup disabled.\n";
-
-            continue;
-        }
-
-        if (choice == "7")
-        {
-            updateBot();
-            continue;
-        }
-
-        if (choice == "8")
+        if (choice == "5")
         {
             if (!serviceExists())
             {
@@ -1877,7 +1792,7 @@ void TelegramBot::menu()
             continue;
         }
 
-        if (choice == "9")
+        if (choice == "6")
         {
             if (!serviceExists())
             {
@@ -1900,6 +1815,32 @@ void TelegramBot::menu()
 
             std::cout << "\n";
 
+            continue;
+        }
+
+        if (choice == "7")
+        {
+            generateCode();
+            continue;
+        }
+
+        if (choice == "8")
+        {
+            if (!serviceExists())
+            {
+                std::cout << "\nTelegram bot is not installed.\n";
+                continue;
+            }
+
+            if (disableService())
+                std::cout << "Automatic startup disabled.\n";
+
+            continue;
+        }
+
+        if (choice == "9")
+        {
+            updateBot();
             continue;
         }
 
