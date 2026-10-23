@@ -1,11 +1,8 @@
 #pragma once
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
+// Cross-platform: sockets/WinAPI come from Platform.h (must be before libssh2.h)
+#include "Platform.h"
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
 #include <libssh2.h>
 
 #include "TelegramBot.h"

@@ -1,11 +1,355 @@
 #include "TelegramBot.h"
 #include "TelegramBotInternal.h"
 
-#include <iostream>
-#include <string>
-#include <sstream>
-#include <thread>
+#include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstddef>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <thread>
+
+static const char* MODULE_NAME = "ServerGuard Telegram Bot";
+static const char* MODULE_VERSION = "1.0.0";
+
+struct ModuleCommand
+{
+    const char* key;
+    const char* title;
+};
+
+static const ModuleCommand MODULE_COMMANDS[] = {
+    { "1",  "Install / configure bot" },
+    { "2",  "Start bot" },
+    { "3",  "Stop bot" },
+    { "4",  "Restart bot" },
+    { "5",  "Check status" },
+    { "6",  "Show logs" },
+    { "7",  "Generate verification code" },
+    { "8",  "Disable automatic startup" },
+    { "9",  "Update bot" },
+    { "10", "Remove bot" },
+    { "0",  "Back" },
+};
+
+namespace
+{
+    constexpr int  SG_COMMAND_TIMEOUT_SEC = 1200;
+    constexpr int  SG_PROBE_TIMEOUT_SEC = 60;
+    constexpr long SG_BLOCKING_TIMEOUT_MS = 10000;
+    constexpr int  SG_STDIN_WRITE_TIMEOUT_SEC = 10;
+
+    void sgSleepMs(int milliseconds)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
+    }
+
+    std::string sgTrim(const std::string& value)
+    {
+        const char* whitespace = " \t\r\n";
+
+        const std::size_t first = value.find_first_not_of(whitespace);
+
+        if (first == std::string::npos)
+            return std::string();
+
+        const std::size_t last = value.find_last_not_of(whitespace);
+
+        return value.substr(first, last - first + 1);
+    }
+
+    std::string sgLastLine(const std::string& text)
+    {
+        const std::size_t end = text.find_last_not_of(" \t\r\n");
+
+        if (end == std::string::npos)
+            return std::string();
+
+        std::size_t start = text.find_last_of('\n', end);
+
+        start = (start == std::string::npos) ? 0 : start + 1;
+
+        return sgTrim(text.substr(start, end - start + 1));
+    }
+
+    bool sgFindMarker(
+        const std::string& text,
+        const std::string& marker,
+        std::string& value)
+    {
+        value.clear();
+
+        bool found = false;
+        std::size_t position = 0;
+
+        while (position <= text.size())
+        {
+            const std::size_t eol = text.find('\n', position);
+
+            const std::string line = sgTrim(
+                text.substr(
+                    position,
+                    eol == std::string::npos
+                    ? std::string::npos
+                    : eol - position));
+
+            if (line.compare(0, marker.size(), marker) == 0)
+            {
+                value = sgTrim(line.substr(marker.size()));
+                found = true;
+            }
+
+            if (eol == std::string::npos)
+                break;
+
+            position = eol + 1;
+        }
+
+        return found;
+    }
+
+    bool sgSudoNeedsPassword(const std::string& output)
+    {
+        return output.find("a password is required") != std::string::npos ||
+            output.find("a terminal is required to read the password") != std::string::npos;
+    }
+
+    class SgSessionModeGuard
+    {
+    public:
+        explicit SgSessionModeGuard(LIBSSH2_SESSION* s)
+            : session(s),
+            blocking(libssh2_session_get_blocking(s)),
+            timeout(libssh2_session_get_timeout(s))
+        {
+            libssh2_session_set_blocking(session, 1);
+            libssh2_session_set_timeout(session, SG_BLOCKING_TIMEOUT_MS);
+        }
+
+        ~SgSessionModeGuard()
+        {
+            libssh2_session_set_timeout(session, timeout);
+            libssh2_session_set_blocking(session, blocking);
+        }
+
+        SgSessionModeGuard(const SgSessionModeGuard&) = delete;
+        SgSessionModeGuard& operator=(const SgSessionModeGuard&) = delete;
+
+    private:
+        LIBSSH2_SESSION* session;
+        int blocking;
+        long timeout;
+    };
+
+    std::string sgDescribeError(
+        LIBSSH2_SESSION* session,
+        const std::string& what,
+        int code)
+    {
+        char* errorMessage = nullptr;
+        int errorLength = 0;
+
+        const int lastCode = libssh2_session_last_error(
+            session,
+            &errorMessage,
+            &errorLength,
+            0);
+
+        std::ostringstream text;
+
+        text << what << ". libssh2 error: " << (code != 0 ? code : lastCode);
+
+        if (errorMessage != nullptr && errorLength > 0)
+        {
+            text << ". Details: "
+                << std::string(errorMessage, static_cast<std::size_t>(errorLength));
+        }
+
+        return text.str();
+    }
+
+    bool sgRunChannel(
+        LIBSSH2_SESSION* session,
+        const std::string& command,
+        const std::string& stdinData,
+        int timeoutSec,
+        std::string& output,
+        int& exitCode)
+    {
+        output.clear();
+        exitCode = -1;
+
+        if (session == nullptr)
+        {
+            output = "SSH session is invalid.";
+            return false;
+        }
+
+        SgSessionModeGuard modeGuard(session);
+
+        LIBSSH2_CHANNEL* channel = libssh2_channel_open_session(session);
+
+        if (channel == nullptr)
+        {
+            output = sgDescribeError(session, "Cannot open SSH channel", 0);
+            return false;
+        }
+
+        auto release = [&]()
+            {
+                libssh2_channel_close(channel);
+                libssh2_channel_free(channel);
+            };
+
+        libssh2_channel_handle_extended_data2(
+            channel,
+            LIBSSH2_CHANNEL_EXTENDED_DATA_MERGE);
+
+        const int execResult = libssh2_channel_exec(channel, command.c_str());
+
+        if (execResult != 0)
+        {
+            output = sgDescribeError(session, "Cannot execute remote command", execResult);
+            release();
+            return false;
+        }
+
+        std::size_t totalWritten = 0;
+
+        const auto writeDeadline =
+            std::chrono::steady_clock::now() +
+            std::chrono::seconds(SG_STDIN_WRITE_TIMEOUT_SEC);
+
+        while (totalWritten < stdinData.size())
+        {
+            const ssize_t written = libssh2_channel_write(
+                channel,
+                stdinData.data() + totalWritten,
+                stdinData.size() - totalWritten);
+
+            if (written > 0)
+            {
+                totalWritten += static_cast<std::size_t>(written);
+                continue;
+            }
+
+            if ((written == LIBSSH2_ERROR_EAGAIN || written == LIBSSH2_ERROR_TIMEOUT) &&
+                std::chrono::steady_clock::now() < writeDeadline)
+            {
+                sgSleepMs(10);
+                continue;
+            }
+
+            break;
+        }
+
+        libssh2_channel_send_eof(channel);
+
+        const int effectiveTimeout = timeoutSec > 0 ? timeoutSec : SG_COMMAND_TIMEOUT_SEC;
+
+        const auto deadline =
+            std::chrono::steady_clock::now() +
+            std::chrono::seconds(effectiveTimeout);
+
+        char buffer[4096];
+        bool timedOut = false;
+        bool readError = false;
+
+        while (true)
+        {
+            const ssize_t bytesRead = libssh2_channel_read(channel, buffer, sizeof(buffer));
+
+            if (bytesRead > 0)
+            {
+                output.append(buffer, static_cast<std::size_t>(bytesRead));
+
+                if (std::chrono::steady_clock::now() > deadline)
+                {
+                    timedOut = true;
+                    break;
+                }
+
+                continue;
+            }
+
+            if (bytesRead == LIBSSH2_ERROR_EAGAIN ||
+                bytesRead == LIBSSH2_ERROR_TIMEOUT ||
+                bytesRead == 0)
+            {
+                if (libssh2_channel_eof(channel))
+                    break;
+
+                if (std::chrono::steady_clock::now() > deadline)
+                {
+                    timedOut = true;
+                    break;
+                }
+
+                if (bytesRead != LIBSSH2_ERROR_TIMEOUT)
+                    sgSleepMs(10);
+
+                continue;
+            }
+
+            output += "\n" + sgDescribeError(
+                session,
+                "SSH channel read failed",
+                static_cast<int>(bytesRead));
+
+            readError = true;
+            break;
+        }
+
+        if (timedOut)
+        {
+            output += "\n[timeout after " + std::to_string(effectiveTimeout) + " seconds]";
+            release();
+            exitCode = -2;
+            return false;
+        }
+
+        if (readError)
+        {
+            release();
+            return false;
+        }
+
+        libssh2_channel_close(channel);
+        libssh2_channel_wait_closed(channel);
+
+        exitCode = libssh2_channel_get_exit_status(channel);
+
+        char* exitSignal = nullptr;
+        std::size_t exitSignalLength = 0;
+
+        if (libssh2_channel_get_exit_signal(
+            channel,
+            &exitSignal,
+            &exitSignalLength,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr) == 0 &&
+            exitSignal != nullptr &&
+            exitSignalLength > 0)
+        {
+            output += "\n[terminated by signal " +
+                std::string(exitSignal, exitSignalLength) + "]";
+
+            if (exitCode == 0)
+                exitCode = -3;
+        }
+
+        libssh2_channel_free(channel);
+
+        output.erase(
+            std::remove(output.begin(), output.end(), '\r'),
+            output.end());
+
+        return true;
+    }
+}
 
 TelegramBot::TelegramBot(LIBSSH2_SESSION* sshSession, const std::string& password)
 {
@@ -30,155 +374,57 @@ bool TelegramBot::executeRemote(
         return false;
     }
 
-    std::string finalCommand = command;
-
-    if (useSudo && sudoRequired)
+    if (useSudo && !sudoAuthenticated)
     {
-        if (!sudoAuthenticated)
+        if (!authenticateSudo())
         {
-            if (!authenticateSudo())
-            {
-                output = "Cannot authenticate sudo.";
-                return false;
-            }
+            output = "Cannot obtain administrator privileges on the remote server.";
+            return false;
         }
-
-        finalCommand = "sudo -n bash -c " + shellQuote(command);
     }
 
-    LIBSSH2_CHANNEL* channel = libssh2_channel_open_session(session);
+    const bool elevate = useSudo && sudoRequired;
 
-    if (channel == nullptr)
+    if (!elevate)
     {
-        char* errorMessage = nullptr;
-        int errorLength = 0;
+        if (!sgRunChannel(session, command, std::string(), SG_COMMAND_TIMEOUT_SEC, output, exitCode))
+            return false;
 
-        int errorCode = libssh2_session_last_error(
-            session,
-            &errorMessage,
-            &errorLength,
-            0
-        );
+        return exitCode == 0;
+    }
 
-        std::ostringstream error;
+    const std::string quotedCommand = shellQuote(command);
 
-        error << "Cannot open SSH channel. "
-            << "libssh2 error: " << errorCode;
-
-        if (errorMessage != nullptr && errorLength > 0)
-        {
-            error << ". Details: "
-                << std::string(errorMessage, errorLength);
-        }
-
-        output = error.str();
+    if (!sgRunChannel(
+        session,
+        "sudo -n -H bash -c " + quotedCommand,
+        std::string(),
+        SG_COMMAND_TIMEOUT_SEC,
+        output,
+        exitCode))
+    {
         return false;
     }
 
-    libssh2_channel_handle_extended_data2(
-        channel,
-        LIBSSH2_CHANNEL_EXTENDED_DATA_MERGE
-    );
-
-    int execResult = libssh2_channel_exec(
-        channel,
-        finalCommand.c_str()
-    );
-
-    if (execResult != 0)
+    if (exitCode != 0 && sgSudoNeedsPassword(output))
     {
-        char* errorMessage = nullptr;
-        int errorLength = 0;
+        if (sudoPassword.empty())
+        {
+            output = "Sudo requires a password, but the sudo password is empty.";
+            return false;
+        }
 
-        int errorCode = libssh2_session_last_error(
+        if (!sgRunChannel(
             session,
-            &errorMessage,
-            &errorLength,
-            0
-        );
-
-        std::ostringstream error;
-
-        error << "Cannot execute remote command. "
-            << "libssh2 error: " << errorCode;
-
-        if (errorMessage != nullptr && errorLength > 0)
+            "sudo -S -p '' -H bash -c " + quotedCommand,
+            sudoPassword + "\n",
+            SG_COMMAND_TIMEOUT_SEC,
+            output,
+            exitCode))
         {
-            error << ". Details: "
-                << std::string(errorMessage, errorLength);
+            return false;
         }
-
-        output = error.str();
-
-        libssh2_channel_close(channel);
-        libssh2_channel_free(channel);
-
-        return false;
     }
-
-    char buffer[4096];
-
-    while (true)
-    {
-        ssize_t rc = libssh2_channel_read(
-            channel,
-            buffer,
-            sizeof(buffer) - 1
-        );
-
-        if (rc > 0)
-        {
-            output.append(buffer, static_cast<std::size_t>(rc));
-            continue;
-        }
-
-        if (rc == 0)
-        {
-            if (libssh2_channel_eof(channel))
-                break;
-
-            continue;
-        }
-
-        if (rc == LIBSSH2_ERROR_EAGAIN)
-        {
-            output += "\nSSH read returned LIBSSH2_ERROR_EAGAIN.";
-            break;
-        }
-
-        char* errorMessage = nullptr;
-        int errorLength = 0;
-
-        int errorCode = libssh2_session_last_error(
-            session,
-            &errorMessage,
-            &errorLength,
-            0
-        );
-
-        std::ostringstream error;
-
-        error << "\nSSH channel read failed. "
-            << "Read result: " << rc
-            << "; libssh2 error: " << errorCode;
-
-        if (errorMessage != nullptr && errorLength > 0)
-        {
-            error << ". Details: "
-                << std::string(errorMessage, errorLength);
-        }
-
-        output += error.str();
-        break;
-    }
-
-    libssh2_channel_send_eof(channel);
-    libssh2_channel_wait_eof(channel);
-    libssh2_channel_wait_closed(channel);
-
-    exitCode = libssh2_channel_get_exit_status(channel);
-
-    libssh2_channel_free(channel);
 
     return exitCode == 0;
 }
@@ -187,96 +433,100 @@ bool TelegramBot::executeRemote(
 bool TelegramBot::authenticateSudo()
 {
     if (!session)
-        return false;
-
-    if (!sudoRequired)
     {
+        std::cout << "ERROR: SSH session is not available.\n";
+        return false;
+    }
+
+    std::cout << "Checking remote user privileges...\n";
+
+    std::string output;
+    int exitCode = -1;
+
+    if (!sgRunChannel(session, "id -u", std::string(), SG_PROBE_TIMEOUT_SEC, output, exitCode) ||
+        exitCode != 0)
+    {
+        sudoAuthenticated = false;
+        std::cout << "Cannot determine remote user ID.\n";
+
+        if (!output.empty())
+            std::cout << output << "\n";
+
+        return false;
+    }
+
+    const std::string uidText = sgLastLine(output);
+    long uid = -1;
+
+    try
+    {
+        std::size_t used = 0;
+        uid = std::stol(uidText, &used);
+
+        if (used != uidText.size())
+            uid = -1;
+    }
+    catch (...)
+    {
+        uid = -1;
+    }
+
+    if (uid < 0)
+    {
+        sudoAuthenticated = false;
+        std::cout << "Cannot parse remote user ID: [" << uidText << "]\n";
+        return false;
+    }
+
+    if (uid == 0)
+    {
+        sudoRequired = false;
         sudoAuthenticated = true;
+
+        std::cout << "Connected as root. Sudo is not required.\n";
         return true;
     }
 
+    sudoRequired = true;
+    sudoAuthenticated = false;
+
+    if (sgRunChannel(session, "sudo -n true", std::string(), SG_PROBE_TIMEOUT_SEC, output, exitCode) &&
+        exitCode == 0)
+    {
+        sudoAuthenticated = true;
+        std::cout << "Sudo is available without a password.\n";
+        return true;
+    }
+
+    const std::string passwordlessOutput = output;
+
     if (sudoPassword.empty())
     {
-        std::cout << "Sudo password is empty.\n";
+        std::cout << "Sudo requires a password, but the sudo password is empty.\n";
+
+        if (!passwordlessOutput.empty())
+            std::cout << passwordlessOutput << "\n";
+
         return false;
     }
 
     std::cout << "Authenticating sudo...\n";
 
-    LIBSSH2_CHANNEL* channel = libssh2_channel_open_session(session);
-
-    if (!channel)
+    if (!sgRunChannel(
+        session,
+        "sudo -S -p '' -v",
+        sudoPassword + "\n",
+        SG_PROBE_TIMEOUT_SEC,
+        output,
+        exitCode))
     {
-        std::cout << "Cannot open sudo channel.\n";
+        std::cout << "Cannot run sudo authentication.\n";
+
+        if (!output.empty())
+            std::cout << output << "\n";
+
         return false;
     }
-
-    libssh2_channel_request_pty(channel, "xterm");
-    libssh2_channel_handle_extended_data2(channel, LIBSSH2_CHANNEL_EXTENDED_DATA_MERGE);
-
-    const char* command = "sudo -S -p '' -v";
-
-    if (libssh2_channel_exec(channel, command) != 0)
-    {
-        libssh2_channel_free(channel);
-        return false;
-    }
-
-    std::string password = sudoPassword + "\n";
-    size_t totalWritten = 0;
-
-    while (totalWritten < password.size())
-    {
-        int written = static_cast<int>(libssh2_channel_write(channel, password.c_str() + totalWritten, password.size() - totalWritten));
-
-        if (written < 0)
-        {
-            libssh2_channel_free(channel);
-            return false;
-        }
-
-        if (written == 0)
-            continue;
-
-        totalWritten += static_cast<size_t>(written);
-    }
-
-    libssh2_channel_send_eof(channel);
-
-    char buffer[4096];
-    std::string output;
-
-    while (true)
-    {
-        int rc = static_cast<int>(libssh2_channel_read(channel, buffer, sizeof(buffer) - 1));
-
-        if (rc > 0)
-        {
-            buffer[rc] = '\0';
-            output += buffer;
-            continue;
-        }
-
-        if (rc == 0)
-        {
-            if (libssh2_channel_eof(channel))
-                break;
-
-            continue;
-        }
-
-        if (rc == LIBSSH2_ERROR_EAGAIN)
-            continue;
-
-        break;
-    }
-
-    libssh2_channel_wait_eof(channel);
-    libssh2_channel_wait_closed(channel);
-
-    int exitCode = libssh2_channel_get_exit_status(channel);
-
-    libssh2_channel_free(channel);
 
     if (exitCode == 0)
     {
@@ -285,8 +535,8 @@ bool TelegramBot::authenticateSudo()
         return true;
     }
 
-    sudoAuthenticated = false;
-    std::cout << "Sudo authentication failed.\n";
+    std::cout << "Sudo authentication failed. Exit code: "
+        << exitCode << "\n";
 
     if (!output.empty())
         std::cout << output << "\n";
@@ -317,9 +567,16 @@ bool TelegramBot::checkRootOrSudo()
         return false;
     }
 
-    std::stringstream stream(output);
-    int uid = -1;
-    stream >> uid;
+    long uid = -1;
+
+    try
+    {
+        uid = std::stol(sgLastLine(output));
+    }
+    catch (...)
+    {
+        uid = -1;
+    }
 
     if (uid == 0)
     {
@@ -336,6 +593,7 @@ bool TelegramBot::checkRootOrSudo()
     }
 
     sudoRequired = true;
+    sudoAuthenticated = false;
 
     if (!authenticateSudo())
     {
@@ -374,17 +632,32 @@ bool TelegramBot::installPythonDependencies()
 {
     std::cout << "\nChecking Python environment...\n";
 
-    if (!commandExists("python3"))
+    if (!commandExists("apt-get"))
     {
-        std::cout << "Python3 not found.\n";
-        std::cout << "Installing Python3...\n";
+        std::cout << "apt-get not found.\n";
+        return false;
+    }
 
-        std::string output;
-        int exitCode = -1;
+    std::string output;
+    int exitCode = -1;
 
-        if (!executeRemote("apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3", output, exitCode, true))
+    const bool packagesPresent =
+        commandExists("python3") &&
+        commandExists("curl") &&
+        commandExists("unzip") &&
+        executeRemote("dpkg -s python3-venv python3-pip >/dev/null 2>&1", output, exitCode, false);
+
+    if (!packagesPresent)
+    {
+        std::cout << "Installing Python3, venv, pip, curl and unzip...\n";
+
+        if (!executeRemote(
+            "apt-get update -o DPkg::Lock::Timeout=300 && "
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=300 "
+            "python3 python3-venv python3-pip curl unzip",
+            output, exitCode, true))
         {
-            std::cout << "Failed to install Python3.\n";
+            std::cout << "Failed to install Python requirements.\n";
 
             if (!output.empty())
                 std::cout << output << "\n";
@@ -392,33 +665,16 @@ bool TelegramBot::installPythonDependencies()
             return false;
         }
     }
-
-    if (!commandExists("apt-get"))
+    else
     {
-        std::cout << "apt-get not found.\n";
-        return false;
-    }
-
-    std::cout << "Checking Python packages...\n";
-
-    std::string output;
-    int exitCode = -1;
-
-    if (!executeRemote("apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv python3-pip curl unzip", output, exitCode, true))
-    {
-        std::cout << "Failed to install Python requirements.\n";
-
-        if (!output.empty())
-            std::cout << output << "\n";
-
-        return false;
+        std::cout << "Required system packages are already installed.\n";
     }
 
     std::cout << "Checking Telegram virtual environment...\n";
 
     std::string venvPython = TELEGRAM_VENV + "/bin/python";
 
-    bool venvExists = executeRemote("test -x " + shellQuote(venvPython), output, exitCode, false);
+    bool venvExists = executeRemote("test -x " + shellQuote(venvPython), output, exitCode, true);
 
     if (!venvExists)
     {
@@ -459,7 +715,7 @@ bool TelegramBot::installPythonDependencies()
     output.clear();
     exitCode = -1;
 
-    bool aiogramInstalled = executeRemote(shellQuote(venvPython) + " -c \"import aiogram\"", output, exitCode, false);
+    bool aiogramInstalled = executeRemote(shellQuote(venvPython) + " -c \"import aiogram\"", output, exitCode, true);
 
     if (!aiogramInstalled)
     {
@@ -494,7 +750,7 @@ bool TelegramBot::checkScript()
     std::string output;
     int exitCode = -1;
 
-    executeRemote("test -f " + shellQuote(TELEGRAM_SCRIPT), output, exitCode, false);
+    executeRemote("test -f " + shellQuote(TELEGRAM_SCRIPT), output, exitCode, true);
 
     return exitCode == 0;
 }
@@ -510,7 +766,10 @@ bool TelegramBot::ensureUnzip()
     std::string output;
     int exitCode = -1;
 
-    if (!executeRemote("apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y unzip", output, exitCode, true))
+    if (!executeRemote(
+        "apt-get update -o DPkg::Lock::Timeout=300 && "
+        "DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=300 unzip",
+        output, exitCode, true))
     {
         std::cout << "Cannot install unzip.\n";
 
@@ -526,45 +785,68 @@ bool TelegramBot::ensureUnzip()
 bool TelegramBot::downloadRepositoryArchive(const std::string& archivePath)
 {
     std::cout << "\nDownloading Telegram bot repository...\n";
-    std::cout << "Repository:\n" << GITHUB_TELEGRAM_REPOSITORY_ZIP << "\n\n";
+    std::cout << "Repository:\n"
+        << GITHUB_TELEGRAM_REPOSITORY_ZIP << "\n\n";
 
     std::string output;
     int exitCode = -1;
 
-    std::string command =
+    const std::string command =
         "rm -f " + shellQuote(archivePath) + " && "
         "curl -fL --silent --show-error "
         "--connect-timeout 15 "
         "--max-time 180 "
         "--retry 3 "
         "--retry-delay 2 "
-        "-o " + shellQuote(archivePath) + " " + shellQuote(GITHUB_TELEGRAM_REPOSITORY_ZIP);
+        "-o " + shellQuote(archivePath) + " "
+        + shellQuote(GITHUB_TELEGRAM_REPOSITORY_ZIP)
+        + " && "
+        "test -s " + shellQuote(archivePath)
+        + " && "
+        "stat -c '%s' " + shellQuote(archivePath);
 
     if (!executeRemote(command, output, exitCode, true))
     {
-        std::cout << "Repository download failed.\n";
+        std::cout << "Repository download or verification failed.\n";
 
         if (!output.empty())
-            std::cout << output << "\n";
+            std::cout << output << '\n';
 
+        std::cout << "Exit code: " << exitCode << '\n';
         return false;
     }
 
-    output.clear();
-    exitCode = -1;
+    const std::string sizeText = sgLastLine(output);
 
-    if (!executeRemote("test -s " + shellQuote(archivePath), output, exitCode, false))
+    try
     {
-        std::cout << "Downloaded repository archive is empty.\n";
+        const unsigned long long archiveSize =
+            std::stoull(sizeText);
+
+        if (archiveSize == 0)
+        {
+            std::cout << "Downloaded archive is empty.\n";
+            return false;
+        }
+
+        std::cout << "Repository archive downloaded successfully.\n";
+        std::cout << "Archive size: "
+            << archiveSize << " bytes.\n";
+
+        return true;
+    }
+    catch (...)
+    {
+        std::cout << "Could not determine downloaded archive size.\n";
+        std::cout << "Command output: " << output << '\n';
         return false;
     }
-
-    std::cout << "Repository archive downloaded successfully.\n";
-
-    return true;
 }
 
-bool TelegramBot::extractRepository(const std::string& archivePath, const std::string& extractDirectory, std::string& repositoryRoot)
+bool TelegramBot::extractRepository(
+    const std::string& archivePath,
+    const std::string& extractDirectory,
+    std::string& repositoryRoot)
 {
     repositoryRoot.clear();
 
@@ -573,127 +855,62 @@ bool TelegramBot::extractRepository(const std::string& archivePath, const std::s
     std::string output;
     int exitCode = -1;
 
-    std::string command =
-        "rm -rf " + shellQuote(extractDirectory) + " && "
-        "mkdir -p " + shellQuote(extractDirectory) + " && "
-        "unzip -q " + shellQuote(archivePath) + " -d " + shellQuote(extractDirectory);
+    const std::string command =
+        "set -eu; "
+        "rm -rf " + shellQuote(extractDirectory) + "; "
+        "mkdir -p " + shellQuote(extractDirectory) + "; "
+        "unzip -tq " + shellQuote(archivePath) + " >/dev/null; "
+        "unzip -q -o " + shellQuote(archivePath) +
+        " -d " + shellQuote(extractDirectory) + "; "
+        "chown -R root:root " + shellQuote(extractDirectory) + "; "
+        "chmod -R u+rwX,go+rX,go-w,a-s " + shellQuote(extractDirectory) + "; "
+        "script=$(find " + shellQuote(extractDirectory) +
+        " -maxdepth 4 -type f -name 'telegram_bot.py' ! -path '*/__MACOSX/*' "
+        "-printf '%d\\t%p\\n' | sort -n | head -n 1 | cut -f2-); "
+        "if [ -z \"$script\" ]; then "
+        "echo 'ERROR: telegram_bot.py not found after extraction' >&2; "
+        "find " + shellQuote(extractDirectory) +
+        " -maxdepth 5 -print >&2; "
+        "exit 20; "
+        "fi; "
+        "printf '\\nSERVERGUARD_SCRIPT_PATH=%s\\n' \"$script\"; "
+        "printf 'SERVERGUARD_REPOSITORY_ROOT=%s\\n' "
+        "\"$(dirname \"$script\")\"";
 
     if (!executeRemote(command, output, exitCode, true))
     {
-        std::cout << "Cannot extract Telegram repository.\n";
+        std::cout << "Repository extraction or search failed.\n";
 
         if (!output.empty())
-            std::cout << output << "\n";
+            std::cout << output << '\n';
 
+        std::cout << "Remote exit code: " << exitCode << '\n';
         return false;
     }
 
-    std::cout << "Searching extracted repository for telegram_bot.py...\n";
+    std::string foundRoot;
 
-    std::string mainScript;
-
-    const int MAX_NESTED_UNZIP_ITERATIONS = 5;
-
-    for (int iteration = 0; iteration < MAX_NESTED_UNZIP_ITERATIONS; ++iteration)
+    if (!sgFindMarker(output, "SERVERGUARD_REPOSITORY_ROOT=", foundRoot))
     {
-        output.clear();
-        exitCode = -1;
-
-        command = "find " + shellQuote(extractDirectory) + " -type f -name 'telegram_bot.py' -print -quit";
-
-        if (!executeRemote(command, output, exitCode, false))
-        {
-            std::cout << "Cannot search extracted Telegram repository.\n";
-            return false;
-        }
-
-        mainScript = trim(output);
-
-        if (!mainScript.empty())
-            break;
-
-        output.clear();
-        exitCode = -1;
-
-        command = "find " + shellQuote(extractDirectory) + " -type f -name '*.zip' -print";
-
-        executeRemote(command, output, exitCode, false);
-
-        std::string nestedZips = trim(output);
-
-        if (nestedZips.empty())
-            break;
-
-        std::cout << "Nested archive(s) found inside repository, extracting...\n";
-
-        std::istringstream zipStream(nestedZips);
-        std::string zipPath;
-
-        while (std::getline(zipStream, zipPath))
-        {
-            zipPath = trim(zipPath);
-
-            if (zipPath.empty())
-                continue;
-
-            std::cout << "Extracting nested archive:\n" << zipPath << "\n";
-
-            std::string nestedExtractDir = zipPath + ".__extracted";
-
-            std::string extractCommand =
-                "unzip -q -o " + shellQuote(zipPath) + " -d " + shellQuote(nestedExtractDir) +
-                " && rm -f " + shellQuote(zipPath);
-
-            std::string extractOutput;
-            int extractExitCode = -1;
-
-            if (!executeRemote(extractCommand, extractOutput, extractExitCode, true))
-            {
-                std::cout << "Cannot extract nested archive:\n" << zipPath << "\n";
-
-                if (!extractOutput.empty())
-                    std::cout << extractOutput << "\n";
-            }
-        }
-    }
-
-    if (mainScript.empty())
-    {
-        std::cout << "ERROR: telegram_bot.py was not found anywhere in extracted repository (including nested archives).\n";
-        std::cout << "Extracted directory:\n" << extractDirectory << "\n";
-
-        output.clear();
-        exitCode = -1;
-
-        executeRemote("find " + shellQuote(extractDirectory) + " -maxdepth 6 -print", output, exitCode, false);
+        std::cout << "Could not determine Telegram repository root.\n";
 
         if (!output.empty())
-            std::cout << "\nExtracted repository contents:\n" << output << "\n";
+            std::cout << output << '\n';
 
         return false;
     }
 
-    output.clear();
-    exitCode = -1;
-
-    command = "dirname " + shellQuote(mainScript);
-
-    if (!executeRemote(command, output, exitCode, false))
+    if (foundRoot.empty() || foundRoot[0] != '/')
     {
-        std::cout << "Cannot determine Telegram repository root.\n";
+        std::cout << "Repository root is empty or not an absolute path: ["
+            << foundRoot << "]\n";
         return false;
     }
 
-    repositoryRoot = trim(output);
+    repositoryRoot = foundRoot;
 
-    if (repositoryRoot.empty())
-    {
-        std::cout << "Repository root is empty.\n";
-        return false;
-    }
-
-    std::cout << "Telegram bot entry point found:\n" << mainScript << "\n";
-    std::cout << "Repository root:\n" << repositoryRoot << "\n";
+    std::cout << "Repository extracted successfully.\n";
+    std::cout << "Repository root:\n" << repositoryRoot << '\n';
 
     return true;
 }
@@ -701,50 +918,42 @@ bool TelegramBot::extractRepository(const std::string& archivePath, const std::s
 bool TelegramBot::validateRepository(const std::string& repositoryRoot)
 {
     std::cout << "\nValidating Telegram repository...\n";
+    std::cout << "Repository root: [" << repositoryRoot << "]\n";
 
-    std::string mainScript = repositoryRoot + "/telegram_bot.py";
-    std::string output;
-    int exitCode = -1;
-
-    if (!executeRemote("test -f " + shellQuote(mainScript), output, exitCode, false))
+    if (repositoryRoot.empty())
     {
-        std::cout << "ERROR: telegram_bot.py was not found.\n";
-        std::cout << "Expected:\n" << mainScript << "\n";
-
-        output.clear();
-        exitCode = -1;
-
-        executeRemote("find " + shellQuote(repositoryRoot) + " -type f -name 'telegram_bot.py' -print", output, exitCode, false);
-
-        if (!output.empty())
-            std::cout << "\nFound telegram_bot.py files:\n" << output << "\n";
-
+        std::cout << "ERROR: repositoryRoot is empty.\n";
         return false;
     }
 
-    std::cout << "Main Telegram bot file found:\n" << mainScript << "\n";
-    std::cout << "\nChecking repository contents...\n";
+    const std::string mainScript = repositoryRoot + "/telegram_bot.py";
 
-    output.clear();
-    exitCode = -1;
+    std::string output;
+    int exitCode = -1;
 
-    executeRemote("find " + shellQuote(repositoryRoot) + " -maxdepth 2 -print", output, exitCode, false);
+    const std::string checkCommand =
+        "if [ -d " + shellQuote(repositoryRoot) + " ]; then "
+        "echo 'REPOSITORY_DIRECTORY_EXISTS'; "
+        "else echo 'REPOSITORY_DIRECTORY_MISSING'; fi; "
+        "if [ -f " + shellQuote(mainScript) + " ]; then "
+        "echo 'TELEGRAM_SCRIPT_EXISTS'; "
+        "else echo 'TELEGRAM_SCRIPT_MISSING'; fi; "
+        "printf 'ACTUAL_ROOT='; "
+        "ls -ld " + shellQuote(repositoryRoot) + " 2>&1; "
+        "printf '\\nROOT_CONTENTS:\\n'; "
+        "ls -la " + shellQuote(repositoryRoot) + " 2>&1; "
+        "printf '\\nSCRIPT_SEARCH:\\n'; "
+        "find " + shellQuote(repositoryRoot) +
+        " -maxdepth 4 -type f -name 'telegram_bot.py' -print 2>&1; "
+        "exit 0";
 
-    if (!output.empty())
-        std::cout << output << "\n";
+    const bool checkExecuted =
+        executeRemote(checkCommand, output, exitCode, true);
 
-    std::cout << "Checking Python syntax for repository...\n";
-
-    std::string python = TELEGRAM_VENV + "/bin/python";
-
-    output.clear();
-    exitCode = -1;
-
-    std::string command = shellQuote(python) + " -m compileall -q " + shellQuote(repositoryRoot);
-
-    if (!executeRemote(command, output, exitCode, true))
+    if (!checkExecuted)
     {
-        std::cout << "Repository Python syntax validation FAILED.\n";
+        std::cout << "ERROR: Could not execute repository diagnostic command.\n";
+        std::cout << "Remote exit code: " << exitCode << "\n";
 
         if (!output.empty())
             std::cout << output << "\n";
@@ -752,17 +961,40 @@ bool TelegramBot::validateRepository(const std::string& repositoryRoot)
         return false;
     }
 
-    std::cout << "All Python files passed syntax validation.\n";
+    std::cout << output << "\n";
 
-    output.clear();
-    exitCode = -1;
+    std::string ignored;
 
-    executeRemote("find " + shellQuote(repositoryRoot) + " -type d -name __pycache__ -prune -exec rm -rf {} +", output, exitCode, true);
+    if (!sgFindMarker(output, "REPOSITORY_DIRECTORY_EXISTS", ignored))
+    {
+        std::cout << "ERROR: Repository directory does not exist.\n";
+        return false;
+    }
 
+    if (!sgFindMarker(output, "TELEGRAM_SCRIPT_EXISTS", ignored))
+    {
+        std::cout << "ERROR: telegram_bot.py is missing from repository root.\n";
+        std::cout << "Expected file:\n" << mainScript << "\n";
+        return false;
+    }
+
+    std::cout << "Main Telegram bot file found:\n"
+        << mainScript << "\n";
+
+    std::cout << "\nChecking Python syntax for repository...\n";
+
+    if (!checkPythonSyntax(mainScript))
+    {
+        std::cout << "ERROR: Python syntax validation failed.\n";
+        return false;
+    }
+
+    std::cout << "Python syntax validation successful.\n";
     std::cout << "Repository validation successful.\n";
 
     return true;
 }
+
 
 bool TelegramBot::setRepositoryPermissions()
 {
@@ -771,13 +1003,19 @@ bool TelegramBot::setRepositoryPermissions()
     std::string output;
     int exitCode = -1;
 
+    const std::string pruneVenvAndQueue =
+        "\\( -path " + shellQuote(TELEGRAM_VENV) +
+        " -o -path " + shellQuote(TELEGRAM_QUEUE) + " \\) -prune -o ";
+
     std::string command =
-        "find " + shellQuote(TELEGRAM_DIR) + " -type d ! -path " + shellQuote(TELEGRAM_QUEUE) + " -exec chmod 755 {} +; "
-        "find " + shellQuote(TELEGRAM_DIR) + " -type f "
+        "find " + shellQuote(TELEGRAM_DIR) + " " + pruneVenvAndQueue +
+        "-type d -exec chmod 755 {} + && "
+        "find " + shellQuote(TELEGRAM_DIR) + " " + pruneVenvAndQueue +
+        "-type f "
         "! -path " + shellQuote(TELEGRAM_CONFIG) + " "
         "! -path " + shellQuote(TELEGRAM_VERIFICATION) + " "
-        "! -path " + shellQuote(TELEGRAM_OWNER) + " -exec chmod 644 {} +; "
-        "chmod 755 " + shellQuote(TELEGRAM_SCRIPT) + "; "
+        "! -path " + shellQuote(TELEGRAM_OWNER) + " -exec chmod 644 {} + && "
+        "chmod 755 " + shellQuote(TELEGRAM_SCRIPT) + " && "
         "chown -R root:root " + shellQuote(TELEGRAM_DIR);
 
     if (!executeRemote(command, output, exitCode, true))
@@ -903,7 +1141,7 @@ bool TelegramBot::configExists()
     std::string output;
     int exitCode = -1;
 
-    executeRemote("test -s " + shellQuote(TELEGRAM_CONFIG), output, exitCode, false);
+    executeRemote("test -s " + shellQuote(TELEGRAM_CONFIG), output, exitCode, true);
 
     return exitCode == 0;
 }
@@ -951,11 +1189,20 @@ bool TelegramBot::createConfig()
         return false;
     }
 
+    for (unsigned char c : token)
+    {
+        if (!(std::isalnum(c) || c == ':' || c == '_' || c == '-'))
+        {
+            std::cout << "Telegram token contains invalid characters.\n";
+            return false;
+        }
+    }
+
     std::string config = "BOT_TOKEN=" + token + "\n";
     std::string encoded = base64Encode(config);
 
     std::string command =
-        "echo " + shellQuote(encoded) + " | base64 -d > " + shellQuote(TELEGRAM_CONFIG) +
+        "umask 077 && echo " + shellQuote(encoded) + " | base64 -d > " + shellQuote(TELEGRAM_CONFIG) +
         " && chmod 600 " + shellQuote(TELEGRAM_CONFIG) +
         " && chown root:root " + shellQuote(TELEGRAM_CONFIG);
 
@@ -1008,7 +1255,7 @@ bool TelegramBot::createConfig(const std::string& token)
     const std::string encoded = base64Encode(config);
 
     const std::string command =
-        "printf '%s' " + shellQuote(encoded) +
+        "umask 077 && printf '%s' " + shellQuote(encoded) +
         " | base64 -d > " + shellQuote(TELEGRAM_CONFIG) +
         " && chmod 600 " + shellQuote(TELEGRAM_CONFIG) +
         " && chown root:root " + shellQuote(TELEGRAM_CONFIG);
@@ -1071,6 +1318,10 @@ bool TelegramBot::createSystemdService()
     if (!executeRemote(command, output, exitCode, true))
     {
         std::cout << "Cannot create Telegram systemd service.\n";
+
+        if (!output.empty())
+            std::cout << output << "\n";
+
         return false;
     }
 
@@ -1182,7 +1433,7 @@ bool TelegramBot::downloadUpdateFile(const std::string& url, const std::string& 
     output.clear();
     exitCode = -1;
 
-    if (!executeRemote("test -s " + shellQuote(destination), output, exitCode, false))
+    if (!executeRemote("test -s " + shellQuote(destination), output, exitCode, true))
     {
         std::cout << "Downloaded file is empty or missing.\n";
         return false;
@@ -1202,7 +1453,14 @@ bool TelegramBot::checkPythonSyntax(const std::string& file)
 
     std::string python = TELEGRAM_VENV + "/bin/python";
 
-    if (!executeRemote(shellQuote(python) + " -m py_compile " + shellQuote(file), output, exitCode, true))
+    const std::string script =
+        "import ast,sys; "
+        "ast.parse(open(sys.argv[1],encoding=\"utf-8\").read(),sys.argv[1])";
+
+    const std::string command =
+        shellQuote(python) + " -c " + shellQuote(script) + " " + shellQuote(file);
+
+    if (!executeRemote(command, output, exitCode, true))
     {
         std::cout << "Python syntax check FAILED.\n";
 
@@ -1224,7 +1482,7 @@ bool TelegramBot::requirementsExists()
 
     std::string requirements = TELEGRAM_DIR + "/requirements.txt";
 
-    executeRemote("test -s " + shellQuote(requirements), output, exitCode, false);
+    executeRemote("test -s " + shellQuote(requirements), output, exitCode, true);
 
     return exitCode == 0;
 }
@@ -1371,17 +1629,17 @@ bool TelegramBot::restoreTelegramCode()
     std::string output;
     int exitCode = -1;
 
-    if (!clearTelegramCode())
+    std::string command = "test -d " + shellQuote(TELEGRAM_CODE_BACKUP);
+
+    if (!executeRemote(command, output, exitCode, true))
     {
-        std::cout << "Cannot clear failed Telegram version.\n";
+        std::cout << "Telegram backup does not exist.\n";
         return false;
     }
 
-    std::string command = "test -d " + shellQuote(TELEGRAM_CODE_BACKUP);
-
-    if (!executeRemote(command, output, exitCode, false))
+    if (!clearTelegramCode())
     {
-        std::cout << "Telegram backup does not exist.\n";
+        std::cout << "Cannot clear failed Telegram version.\n";
         return false;
     }
 
@@ -1416,7 +1674,7 @@ void TelegramBot::showUpdateLogs()
     std::string logs;
     int exitCode = -1;
 
-    executeRemote("journalctl -u " + TELEGRAM_SERVICE + " -n 50 --no-pager", logs, exitCode, false);
+    executeRemote("journalctl -u " + TELEGRAM_SERVICE + " -n 50 --no-pager", logs, exitCode, true);
 
     if (!logs.empty())
         std::cout << logs;
@@ -1435,27 +1693,24 @@ void TelegramBot::menu()
     {
         std::cout << "\n";
         std::cout << "============================================\n";
-        std::cout << "             TELEGRAM BOT\n";
+        std::cout << " " << MODULE_NAME << " v" << MODULE_VERSION << "\n";
         std::cout << "============================================\n\n";
 
-        bool active = serviceIsActive();
+        const bool active = serviceIsActive();
 
         std::cout << "Telegram bot: " << (active ? "ACTIVE" : "INACTIVE") << "\n\n";
-        std::cout << "1. Install / configure bot\n";
-        std::cout << "2. Generate verification code\n";
-        std::cout << "3. Start bot\n";
-        std::cout << "4. Stop bot\n";
-        std::cout << "5. Restart bot\n";
-        std::cout << "6. Disable automatic startup\n";
-        std::cout << "7. Update bot\n";
-        std::cout << "8. Check status\n";
-        std::cout << "9. Show logs\n";
-        std::cout << "10. Remove bot\n";
-        std::cout << "0. Back\n\n";
-        std::cout << "Select: ";
+
+        for (const ModuleCommand& item : MODULE_COMMANDS)
+        {
+            std::cout << item.key << ". " << item.title << "\n";
+        }
+
+        std::cout << "\nSelect: ";
 
         std::string choice;
-        std::getline(std::cin >> std::ws, choice);
+
+        if (!std::getline(std::cin >> std::ws, choice))
+            return;
 
         if (choice == "1")
         {
@@ -1464,12 +1719,6 @@ void TelegramBot::menu()
         }
 
         if (choice == "2")
-        {
-            generateCode();
-            continue;
-        }
-
-        if (choice == "3")
         {
             if (!serviceExists())
             {
@@ -1490,7 +1739,7 @@ void TelegramBot::menu()
             continue;
         }
 
-        if (choice == "4")
+        if (choice == "3")
         {
             if (!serviceExists())
             {
@@ -1504,7 +1753,7 @@ void TelegramBot::menu()
             continue;
         }
 
-        if (choice == "5")
+        if (choice == "4")
         {
             if (!serviceExists())
             {
@@ -1522,7 +1771,60 @@ void TelegramBot::menu()
             continue;
         }
 
+        if (choice == "5")
+        {
+            if (!serviceExists())
+            {
+                std::cout << "\nTelegram bot is not installed.\n";
+                continue;
+            }
+
+            std::string output;
+            int exitCode = -1;
+
+            executeRemote("systemctl status " + TELEGRAM_SERVICE + " --no-pager", output, exitCode, true);
+
+            std::cout << "\n";
+
+            if (!output.empty())
+                std::cout << output;
+
+            continue;
+        }
+
         if (choice == "6")
+        {
+            if (!serviceExists())
+            {
+                std::cout << "\nTelegram bot is not installed.\n";
+                continue;
+            }
+
+            std::string output;
+            int exitCode = -1;
+
+            executeRemote("journalctl -u " + TELEGRAM_SERVICE + " -n 50 --no-pager", output, exitCode, true);
+
+            std::cout << "\n";
+            std::cout << "============================================\n";
+            std::cout << "             TELEGRAM LOGS\n";
+            std::cout << "============================================\n\n";
+
+            if (!output.empty())
+                std::cout << output;
+
+            std::cout << "\n";
+
+            continue;
+        }
+
+        if (choice == "7")
+        {
+            generateCode();
+            continue;
+        }
+
+        if (choice == "8")
         {
             if (!serviceExists())
             {
@@ -1536,56 +1838,9 @@ void TelegramBot::menu()
             continue;
         }
 
-        if (choice == "7")
-        {
-            updateBot();
-            continue;
-        }
-
-        if (choice == "8")
-        {
-            if (!serviceExists())
-            {
-                std::cout << "\nTelegram bot is not installed.\n";
-                continue;
-            }
-
-            std::string output;
-            int exitCode = -1;
-
-            executeRemote("systemctl status " + TELEGRAM_SERVICE + " --no-pager", output, exitCode, false);
-
-            std::cout << "\n";
-
-            if (!output.empty())
-                std::cout << output;
-
-            continue;
-        }
-
         if (choice == "9")
         {
-            if (!serviceExists())
-            {
-                std::cout << "\nTelegram bot is not installed.\n";
-                continue;
-            }
-
-            std::string output;
-            int exitCode = -1;
-
-            executeRemote("journalctl -u " + TELEGRAM_SERVICE + " -n 50 --no-pager", output, exitCode, false);
-
-            std::cout << "\n";
-            std::cout << "============================================\n";
-            std::cout << "             TELEGRAM LOGS\n";
-            std::cout << "============================================\n\n";
-
-            if (!output.empty())
-                std::cout << output;
-
-            std::cout << "\n";
-
+            updateBot();
             continue;
         }
 
@@ -1668,7 +1923,7 @@ std::string TelegramBot::webLogs()
     std::string logs;
     int exitCode = -1;
 
-    executeRemote("journalctl -u " + TELEGRAM_SERVICE + " -n 100 --no-pager", logs, exitCode, false);
+    executeRemote("journalctl -u " + TELEGRAM_SERVICE + " -n 100 --no-pager", logs, exitCode, true);
 
     return logs;
 }

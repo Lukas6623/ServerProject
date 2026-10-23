@@ -5,6 +5,31 @@
 #include <algorithm>
 #include <cctype>
 
+static const char* MODULE_NAME = "ServerGuard SSH Key Guard";
+static const char* MODULE_VERSION = "1.0.0";
+
+struct ModuleCommand
+{
+    const char* key;
+    const char* title;
+};
+
+static const ModuleCommand MODULE_COMMANDS[] = {
+    { "1",  "Install / enable SSH Key Guard" },
+    { "2",  "Start SSH Key Guard" },
+    { "3",  "Stop SSH Key Guard" },
+    { "4",  "Restart SSH Key Guard" },
+    { "5",  "SSH Key Guard status" },
+    { "6",  "Create SSH key baseline" },
+    { "7",  "Scan SSH keys now" },
+    { "8",  "SSH key events" },
+    { "9",  "Show service logs" },
+    { "10", "Install / configure auditd" },
+    { "11", "Update SSH Key Guard" },
+    { "12", "Remove SSH Key Guard" },
+    { "0",  "Back" },
+};
+
 static const std::string SSHKEY_SCRIPT = "/opt/serverguard/ssh_key_guard.py";
 static const std::string SSHKEY_SERVICE = "serverguard-ssh-key.service";
 static const std::string SSHKEY_SERVICE_PATH = "/etc/systemd/system/serverguard-ssh-key.service";
@@ -703,7 +728,6 @@ void SSHKeyGuard::installGuard()
 
         return;
     }
-
 
     auto verifySignedPackage = [this]() -> bool
         {
@@ -1435,7 +1459,6 @@ void SSHKeyGuard::updateGuard()
 
     int exitCode = -1;
 
-
     auto verifySignedPackage = [this]() -> bool
         {
             const std::string publicKey =
@@ -1687,44 +1710,28 @@ void SSHKeyGuard::menu()
 
         printSeparator();
 
-        std::cout << "          SERVERGUARD SSH KEY GUARD" << std::endl;
+        std::cout << " " << MODULE_NAME << " v" << MODULE_VERSION << std::endl;
 
         printSeparator();
 
-        std::cout << "1. Install / enable SSH Key Guard" << std::endl;
+        std::cout << std::endl;
 
-        std::cout << "2. Remove SSH Key Guard" << std::endl;
+        for (const ModuleCommand& item : MODULE_COMMANDS)
+        {
+            std::cout << item.key << ". " << item.title << std::endl;
+        }
 
-        std::cout << "3. Start SSH Key Guard" << std::endl;
-
-        std::cout << "4. Stop SSH Key Guard" << std::endl;
-
-        std::cout << "5. Restart SSH Key Guard" << std::endl;
-
-        std::cout << "6. SSH Key Guard status" << std::endl;
-
-        std::cout << "7. Create SSH key baseline" << std::endl;
-
-        std::cout << "8. Scan SSH keys now" << std::endl;
-
-        std::cout << "9. SSH key events" << std::endl;
-
-        std::cout << "10. Show service logs" << std::endl;
-
-        std::cout << "11. Install / configure auditd" << std::endl;
-
-        std::cout << "12. Update SSH Key Guard" << std::endl;
-
-        std::cout << "0. Back" << std::endl;
-
-        printSeparator();
-
-        std::cout << "Select: ";
+        std::cout << std::endl << "Select: ";
 
         int choice;
 
         if (!(std::cin >> choice))
         {
+            if (std::cin.eof())
+            {
+                return;
+            }
+
             std::cin.clear();
 
             std::cin.ignore(10000, '\n');
@@ -1734,6 +1741,8 @@ void SSHKeyGuard::menu()
             continue;
         }
 
+        std::cin.ignore(10000, '\n');
+
         switch (choice)
         {
         case 1:
@@ -1741,47 +1750,47 @@ void SSHKeyGuard::menu()
             break;
 
         case 2:
-            removeGuard();
-            break;
-
-        case 3:
             startGuard();
             break;
 
-        case 4:
+        case 3:
             stopGuard();
             break;
 
-        case 5:
+        case 4:
             restartGuard();
             break;
 
-        case 6:
+        case 5:
             showStatus();
             break;
 
-        case 7:
+        case 6:
             initializeBaseline();
             break;
 
-        case 8:
+        case 7:
             scanNow();
             break;
 
-        case 9:
+        case 8:
             showEvents();
             break;
 
-        case 10:
+        case 9:
             showLogs();
             break;
 
-        case 11:
+        case 10:
             installAudit();
             break;
 
-        case 12:
+        case 11:
             updateGuard();
+            break;
+
+        case 12:
+            removeGuard();
             break;
 
         case 0:
@@ -2060,4 +2069,4 @@ bool SSHKeyGuard::webUpdate()
     updateGuard();
 
     return scriptExists() && (!serviceExists() || isServiceActive());
-}                     
+}

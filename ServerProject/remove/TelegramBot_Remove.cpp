@@ -28,7 +28,10 @@ bool TelegramBot::removeInstallation()
         "rm -rf " +
         shellQuote(TELEGRAM_CODE_BACKUP);
 
-    if (!executeRemote(command, output, exitCode, true))
+    if (!
+        
+        
+        (command, output, exitCode, true))
     {
         std::cout << "Failed to remove Telegram bot.\n";
 

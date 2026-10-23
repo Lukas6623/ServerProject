@@ -1,4 +1,5 @@
-#define NOMINMAX
+// ServerGuard - main.cpp
+// OS-specific code lives in Platform.h (namespace plat).
 
 #include <iostream>
 #include <iomanip>
@@ -13,9 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <wincrypt.h>
+#include "Platform.h"   // must be included before anything that uses sockets
 
 #include <libssh2.h>
 
@@ -29,13 +28,14 @@
 #include "Web.h"
 #include "Nano.h"
 #include "Firewall.h"
-
-#pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "crypt32.lib")
+#include "Updater.h"
 
 
- 
- 
+#ifndef SERVERGUARD_VERSION
+#define SERVERGUARD_VERSION "1.1.13" 
+#endif
+
+
 enum class AuthMethod
 {
     Password,
@@ -86,20 +86,16 @@ static int authMethodNumber(AuthMethod m)
 }
 
 
-// ============================================================
-//  Server profile
-// ============================================================
-
 struct Config
 {
-    std::string name;           // display name in the server list
+    std::string name;
 
     std::string host;
     int port = 22;
     std::string username;
 
-    std::string password;       // login / sudo password (memory)
-    bool savePassword = false;  // store password (DPAPI-encrypted)
+    std::string password;
+    bool savePassword = false;
 
     AuthMethod auth = AuthMethod::Password;
 
@@ -107,10 +103,10 @@ struct Config
     std::string passphrase;     // never saved
 };
 
+static bool g_updateRequested = false;
 
-// ============================================================
-//  Helpers
-// ============================================================
+
+// ---------- helpers ----------
 
 static std::string trim(const std::string& s)
 {
@@ -136,50 +132,16 @@ static std::string toLower(std::string s)
 static std::string readLine(const std::string& prompt, const std::string& def = "")
 {
     std::cout << prompt;
+    std::cout.flush();
 
     std::string line;
 
     if (!std::getline(std::cin, line))
-    {
         return def;
-    }
 
     line = trim(line);
 
     return line.empty() ? def : line;
-}
-
-static std::string readSecret(const std::string& prompt)
-{
-    std::cout << prompt;
-
-    HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
-
-    DWORD mode = 0;
-
-    bool hidden = (GetConsoleMode(hIn, &mode) != 0);
-
-    if (hidden)
-    {
-        SetConsoleMode(hIn, mode & ~ENABLE_ECHO_INPUT);
-    }
-
-    std::string line;
-    std::getline(std::cin, line);
-
-    if (hidden)
-    {
-        SetConsoleMode(hIn, mode);
-    }
-
-    std::cout << "\n";
-
-    while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
-    {
-        line.pop_back();
-    }
-
-    return line;
 }
 
 static bool askYesNo(const std::string& prompt, bool def)
@@ -190,47 +152,31 @@ static bool askYesNo(const std::string& prompt, bool def)
     return a == "y" || a == "yes" || a == "д" || a == "да";
 }
 
-static bool fileExists(const std::string& path)
-{
-    std::ifstream f(path, std::ios::binary);
-
-    return f.good();
-}
-
 static std::string stripQuotes(std::string s)
 {
     s = trim(s);
 
     if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
-    {
         s = s.substr(1, s.size() - 2);
-    }
 
     return s;
 }
 
 static std::string defaultKeyPath()
 {
-    char* home = nullptr;
-    size_t len = 0;
+    std::string home = plat::homeDir();
 
-    if (_dupenv_s(&home, &len, "USERPROFILE") != 0 || !home)
-    {
+    if (home.empty())
         return "";
-    }
 
-    std::string base = std::string(home) + "\\.ssh\\";
-
-    free(home);
+    std::string base = home + plat::PATH_SEP + ".ssh" + plat::PATH_SEP;
 
     const char* names[] = { "id_ed25519", "id_rsa", "id_ecdsa" };
 
     for (const char* name : names)
     {
-        if (fileExists(base + name))
-        {
+        if (plat::fileExists(base + name))
             return base + name;
-        }
     }
 
     return base + "id_ed25519";
@@ -238,113 +184,84 @@ static std::string defaultKeyPath()
 
 static std::string toHex(const unsigned char* data, size_t len)
 {
-    static const char* digits = "0123456789abcdef";
-
-    std::string out;
-
-    for (size_t i = 0; i < len; i++)
-    {
-        out += digits[data[i] >> 4];
-        out += digits[data[i] & 0x0F];
-    }
-
-    return out;
+    return plat::hexEncode(data, len);
 }
 
-static bool fromHex(const std::string& hex, std::string& out)
+
+// ---------- updater ----------
+
+#ifdef _WIN32
+static const char* UPDATER_NAME = "SetupServerGuard.exe";
+#else
+static const char* UPDATER_NAME = "update-serverguard.sh";
+#endif
+
+static bool runUpdater()
 {
-    out.clear();
+    std::vector<std::string> candidates;
 
-    if (hex.size() % 2 != 0)
-        return false;
+    std::string exeDir = plat::exeDirectory();
 
-    auto val = [](char c) -> int
-        {
-            if (c >= '0' && c <= '9') return c - '0';
-            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-            return -1;
-        };
+    if (!exeDir.empty())
+        candidates.push_back(exeDir);
 
-    for (size_t i = 0; i < hex.size(); i += 2)
+#ifdef _WIN32
+    std::string pf64 = plat::getEnv("ProgramW6432");
+    std::string pf = plat::getEnv("ProgramFiles");
+    std::string pf86 = plat::getEnv("ProgramFiles(x86)");
+
+    if (!pf64.empty()) candidates.push_back(pf64 + "\\ServerGuard");
+    if (!pf.empty())   candidates.push_back(pf + "\\ServerGuard");
+    if (!pf86.empty()) candidates.push_back(pf86 + "\\ServerGuard");
+#else
+    candidates.push_back("/opt/serverguard");
+    candidates.push_back("/usr/local/share/serverguard");
+    candidates.push_back("/usr/share/serverguard");
+#endif
+
+    std::string dir;
+    std::string setup;
+
+    for (const std::string& candidate : candidates)
     {
-        int hi = val(hex[i]);
-        int lo = val(hex[i + 1]);
+        std::string path = plat::joinPath(candidate, UPDATER_NAME);
 
-        if (hi < 0 || lo < 0)
-            return false;
-
-        out += static_cast<char>((hi << 4) | lo);
+        if (plat::fileExists(path))
+        {
+            dir = candidate;
+            setup = path;
+            break;
+        }
     }
 
+    if (setup.empty())
+    {
+        std::cout << UPDATER_NAME << " not found. Searched:\n";
+
+        for (const std::string& candidate : candidates)
+            std::cout << "  " << plat::joinPath(candidate, UPDATER_NAME) << "\n";
+
+        return false;
+    }
+
+    std::cout << "Launching " << setup << " ...\n";
+
+    if (!plat::launchUpdater(setup, dir))
+    {
+        std::cout << "Failed to launch the updater.\n";
+        return false;
+    }
+
+    std::cout << "Updater started.\n";
     return true;
 }
 
 
-// ============================================================
-//  Password protection (Windows DPAPI: bound to current user)
-// ============================================================
+// ---------- profile storage (servers.cfg, tab separated) ----------
 
-static std::string protectSecret(const std::string& plain)
-{
-    if (plain.empty())
-        return "";
+static const std::string PROFILES_FILE =
+plat::joinPath(plat::appDataDir(), "servers.cfg");
 
-    DATA_BLOB in;
-    in.pbData = reinterpret_cast<BYTE*>(const_cast<char*>(plain.data()));
-    in.cbData = static_cast<DWORD>(plain.size());
-
-    DATA_BLOB out{};
-
-    if (!CryptProtectData(&in, L"ServerGuard", nullptr, nullptr,
-        nullptr, 0, &out))
-    {
-        return "";
-    }
-
-    std::string hex = toHex(out.pbData, out.cbData);
-
-    LocalFree(out.pbData);
-
-    return hex;
-}
-
-static std::string unprotectSecret(const std::string& hex)
-{
-    if (hex.empty())
-        return "";
-
-    std::string raw;
-
-    if (!fromHex(hex, raw) || raw.empty())
-        return "";
-
-    DATA_BLOB in;
-    in.pbData = reinterpret_cast<BYTE*>(raw.data());
-    in.cbData = static_cast<DWORD>(raw.size());
-
-    DATA_BLOB out{};
-
-    if (!CryptUnprotectData(&in, nullptr, nullptr, nullptr,
-        nullptr, 0, &out))
-    {
-        return "";
-    }
-
-    std::string plain(reinterpret_cast<char*>(out.pbData), out.cbData);
-
-    SecureZeroMemory(out.pbData, out.cbData);
-    LocalFree(out.pbData);
-
-    return plain;
-}
-
-
-// ============================================================
-//  Profile storage (servers.cfg, tab separated)
-// ============================================================
-
-static const char* PROFILES_FILE = "servers.cfg";
 static const char* LEGACY_FILE = "server.cfg";
 
 static std::string cleanField(std::string s)
@@ -360,22 +277,26 @@ static std::string cleanField(std::string s)
 
 static bool saveProfiles(const std::vector<Config>& list)
 {
-    std::ofstream file(PROFILES_FILE, std::ios::trunc);
-
-    if (!file.is_open())
-        return false;
-
-    for (const Config& c : list)
     {
-        file << cleanField(c.name) << '\t'
-            << cleanField(c.host) << '\t'
-            << c.port << '\t'
-            << cleanField(c.username) << '\t'
-            << authMethodToString(c.auth) << '\t'
-            << cleanField(c.keyPath) << '\t'
-            << (c.savePassword ? protectSecret(c.password) : "")
-            << '\n';
+        std::ofstream file(PROFILES_FILE, std::ios::trunc);
+
+        if (!file.is_open())
+            return false;
+
+        for (const Config& c : list)
+        {
+            file << cleanField(c.name) << '\t'
+                << cleanField(c.host) << '\t'
+                << c.port << '\t'
+                << cleanField(c.username) << '\t'
+                << authMethodToString(c.auth) << '\t'
+                << cleanField(c.keyPath) << '\t'
+                << (c.savePassword ? plat::protectSecret(c.password) : "")
+                << '\n';
+        }
     }
+
+    plat::restrictFile(PROFILES_FILE);
 
     return true;
 }
@@ -429,7 +350,7 @@ static std::vector<Config> loadProfiles()
 
         if (f.size() >= 7 && !f[6].empty())
         {
-            c.password = unprotectSecret(f[6]);
+            c.password = plat::unprotectSecret(f[6]);
             c.savePassword = !c.password.empty();
         }
 
@@ -442,10 +363,10 @@ static std::vector<Config> loadProfiles()
     return list;
 }
 
-// Import of the old single-server file (server.cfg)
+// Imports the old single-server file (server.cfg).
 static void migrateLegacyConfig()
 {
-    if (fileExists(PROFILES_FILE) || !fileExists(LEGACY_FILE))
+    if (plat::fileExists(PROFILES_FILE) || !plat::fileExists(LEGACY_FILE))
         return;
 
     std::ifstream file(LEGACY_FILE);
@@ -496,10 +417,28 @@ static void migrateLegacyConfig()
         "no longer need it.\n\n";
 }
 
+static void ensureProfilesFile()
+{
+    if (plat::fileExists(PROFILES_FILE))
+        return;
 
-// ============================================================
-//  Profile editor
-// ============================================================
+    {
+        std::ofstream file(PROFILES_FILE, std::ios::app);
+
+        if (!file.is_open())
+        {
+            std::cout << "Warning: cannot create " << PROFILES_FILE << "\n";
+            return;
+        }
+    }
+
+    plat::restrictFile(PROFILES_FILE);
+
+    std::cout << "Config file created: " << PROFILES_FILE << "\n";
+}
+
+
+// ---------- profile editor ----------
 
 static bool editProfile(Config& cfg, bool isNew)
 {
@@ -511,7 +450,6 @@ static bool editProfile(Config& cfg, bool isNew)
 
     std::string oldHost = cfg.host;
 
-    // host
     while (true)
     {
         cfg.host = readLine(
@@ -528,7 +466,6 @@ static bool editProfile(Config& cfg, bool isNew)
             return false;
     }
 
-    // port
     {
         std::string def = std::to_string(cfg.port);
         std::string input = readLine("SSH port [" + def + "]: ", def);
@@ -547,7 +484,6 @@ static bool editProfile(Config& cfg, bool isNew)
         }
     }
 
-    // username
     while (true)
     {
         cfg.username = readLine(
@@ -564,11 +500,14 @@ static bool editProfile(Config& cfg, bool isNew)
             return false;
     }
 
-    // auth method
     std::cout << "\nAuthentication method:\n";
     std::cout << "1. Password\n";
     std::cout << "2. Private key file (id_ed25519 / id_rsa / .pem)\n";
+#ifdef _WIN32
     std::cout << "3. SSH agent (Pageant / Windows OpenSSH agent)\n";
+#else
+    std::cout << "3. SSH agent (ssh-agent via SSH_AUTH_SOCK)\n";
+#endif
     std::cout << "4. Keyboard-interactive (PAM / 2FA)\n\n";
 
     {
@@ -599,7 +538,7 @@ static bool editProfile(Config& cfg, bool isNew)
     case AuthMethod::Interactive:
 
         cfg.keyPath.clear();
-        cfg.password = readSecret("Password (Enter = ask on every connect): ");
+        cfg.password = plat::readSecret("Password (Enter = ask on every connect): ");
         break;
 
     case AuthMethod::PublicKey:
@@ -615,7 +554,7 @@ static bool editProfile(Config& cfg, bool isNew)
 
         cfg.keyPath = stripQuotes(readLine(prompt, def));
 
-        cfg.password = readSecret(
+        cfg.password = plat::readSecret(
             "Sudo password for server modules "
             "(Enter = ask on every connect): ");
 
@@ -625,7 +564,7 @@ static bool editProfile(Config& cfg, bool isNew)
     case AuthMethod::Agent:
 
         cfg.keyPath.clear();
-        cfg.password = readSecret(
+        cfg.password = plat::readSecret(
             "Sudo password for server modules "
             "(Enter = ask on every connect): ");
         break;
@@ -635,12 +574,17 @@ static bool editProfile(Config& cfg, bool isNew)
 
     if (!cfg.password.empty())
     {
+#ifdef _WIN32
         cfg.savePassword = askYesNo(
             "Save password on this PC (encrypted with Windows DPAPI)?",
             false);
+#else
+        cfg.savePassword = askYesNo(
+            "Save password on this PC (encrypted with a local key file)?",
+            false);
+#endif
     }
 
-    // display name
     {
         std::string def = cfg.name;
 
@@ -654,144 +598,201 @@ static bool editProfile(Config& cfg, bool isNew)
 }
 
 
-// ============================================================
-//  Host key verification
-// ============================================================
+// ---------- host key verification ----------
 
 bool verifyHostKey(LIBSSH2_SESSION* session, const Config& cfg)
 {
-    std::string algo = "SHA256";
-
-    size_t hashLen = 32;
+    if (!session)
+    {
+        std::cout << "[SSH] ERROR: SSH session is unavailable.\n";
+        return false;
+    }
 
     const char* raw =
         libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA256);
 
     if (!raw)
     {
-        algo = "SHA1";
-        hashLen = 20;
-
-        raw = libssh2_hostkey_hash(session, LIBSSH2_HOSTKEY_HASH_SHA1);
-    }
-
-    if (!raw)
-    {
         std::cout
-            << "Warning: cannot read server host key fingerprint.\n";
+            << "[SSH] SECURITY ERROR: Cannot calculate server fingerprint.\n"
+            << "[SSH] Connection rejected.\n";
 
-        return true;
+        return false;
     }
 
-    std::string fingerprint =
-        algo + ":" +
-        toHex(reinterpret_cast<const unsigned char*>(raw), hashLen);
+    const std::string fingerprint =
+        "SHA256:" +
+        toHex(reinterpret_cast<const unsigned char*>(raw), 32);
 
-    std::string id =
+    const std::string id =
         cfg.host + ":" + std::to_string(cfg.port);
 
-    std::vector<std::string> lines;
+    const std::string fileName = plat::joinPath(plat::appDataDir(), "known_hosts.txt");
 
+    std::vector<std::string> lines;
     std::string storedFingerprint;
     bool found = false;
 
     {
-        std::ifstream in("known_hosts.txt");
+        std::ifstream in(fileName);
 
-        std::string line;
-
-        while (std::getline(in, line))
+        if (in.is_open())
         {
-            line = trim(line);
+            std::string line;
 
-            if (line.empty())
-                continue;
-
-            size_t space = line.find(' ');
-
-            if (space != std::string::npos && line.substr(0, space) == id)
+            while (std::getline(in, line))
             {
-                found = true;
-                storedFingerprint = trim(line.substr(space + 1));
-            }
+                line = trim(line);
 
-            lines.push_back(line);
+                if (line.empty())
+                    continue;
+
+                const size_t space = line.find(' ');
+
+                if (space != std::string::npos &&
+                    line.substr(0, space) == id)
+                {
+                    const std::string value = trim(line.substr(space + 1));
+
+                    if (found && storedFingerprint != value)
+                    {
+                        std::cout
+                            << "[SSH] SECURITY ERROR: Conflicting saved keys for "
+                            << id << ".\n"
+                            << "[SSH] Resolve the saved entries manually.\n";
+
+                        return false;
+                    }
+
+                    found = true;
+                    storedFingerprint = value;
+                }
+
+                lines.push_back(line);
+            }
         }
     }
 
     if (found && storedFingerprint == fingerprint)
     {
-        std::cout << "Host key verified.\n";
-
+        std::cout << "[SSH] Host key verified.\n";
         return true;
     }
 
     if (found)
     {
-        std::cout << "\n########################################\n";
-        std::cout << "  WARNING: SERVER HOST KEY HAS CHANGED!\n";
-        std::cout << "########################################\n";
-        std::cout << "Someone may be intercepting the connection "
-            "(man-in-the-middle),\n";
-        std::cout << "or the server was reinstalled.\n\n";
-        std::cout << "Stored: " << storedFingerprint << "\n";
-        std::cout << "Now:    " << fingerprint << "\n\n";
-
-        std::string answer =
-            readLine("Trust the new key and replace the stored one? (yes/no): ", "no");
-
-        if (toLower(answer) != "yes")
-        {
-            return false;
-        }
-
-        std::ofstream out("known_hosts.txt", std::ios::trunc);
-
-        for (const std::string& line : lines)
-        {
-            size_t space = line.find(' ');
-
-            if (space != std::string::npos && line.substr(0, space) == id)
-            {
-                out << id << ' ' << fingerprint << '\n';
-            }
-            else
-            {
-                out << line << '\n';
-            }
-        }
-
-        return true;
+        std::cout
+            << "\n========================================\n"
+            << " SECURITY WARNING: HOST KEY CHANGED\n"
+            << "========================================\n"
+            << "Server:  " << id << "\n"
+            << "Saved:   " << storedFingerprint << "\n"
+            << "Current: " << fingerprint << "\n\n"
+            << "Possible reasons:\n"
+            << "  - VPS was reinstalled;\n"
+            << "  - SSH host keys were regenerated;\n"
+            << "  - IP address now belongs to another server;\n"
+            << "  - possible man-in-the-middle attack.\n\n"
+            << "Verify the CURRENT fingerprint through your hosting\n"
+            << "provider's trusted console before accepting it.\n\n";
+    }
+    else
+    {
+        std::cout
+            << "\n[SSH] First connection to " << id << ".\n"
+            << "[SSH] Fingerprint: " << fingerprint << "\n"
+            << "[SSH] Verify it using a trusted server console.\n\n";
     }
 
-    std::cout << "\nFirst connection to " << id << ".\n";
-    std::cout << "Server host key fingerprint:\n";
-    std::cout << fingerprint << "\n\n";
+    const std::string answer = toLower(
+        readLine(
+            found
+            ? "Replace the saved key after independent verification? (yes/no): "
+            : "Trust this key after independent verification? (yes/no): ",
+            "no"
+        )
+    );
 
-    std::string answer =
-        readLine("Trust this server and continue? (yes/no): ", "no");
-
-    if (toLower(answer) != "yes")
+    if (answer != "yes")
     {
+        std::cout << "[SSH] Connection aborted. Host key not trusted.\n";
         return false;
     }
 
-    std::ofstream out("known_hosts.txt", std::ios::app);
+    std::vector<std::string> updated;
+    bool inserted = false;
 
-    out << id << ' ' << fingerprint << '\n';
+    for (const std::string& line : lines)
+    {
+        const size_t space = line.find(' ');
 
+        const bool sameHost =
+            space != std::string::npos &&
+            line.substr(0, space) == id;
+
+        if (sameHost)
+        {
+            if (!inserted)
+            {
+                updated.push_back(id + " " + fingerprint);
+                inserted = true;
+            }
+        }
+        else
+        {
+            updated.push_back(line);
+        }
+    }
+
+    if (!inserted)
+        updated.push_back(id + " " + fingerprint);
+
+    const std::string tempFile = fileName + ".tmp";
+
+    {
+        std::ofstream out(tempFile, std::ios::trunc);
+
+        if (!out.is_open())
+        {
+            std::cout << "[SSH] ERROR: Cannot write " << tempFile << ".\n";
+            return false;
+        }
+
+        for (const std::string& line : updated)
+            out << line << '\n';
+
+        out.flush();
+
+        if (!out.good())
+        {
+            out.close();
+            std::remove(tempFile.c_str());
+
+            std::cout << "[SSH] ERROR: Failed to save trusted host key.\n";
+            return false;
+        }
+    }
+
+    if (!plat::replaceFile(tempFile, fileName))
+    {
+        std::cout
+            << "[SSH] ERROR: Cannot replace known_hosts file. System error: "
+            << plat::lastSystemError() << "\n";
+
+        std::remove(tempFile.c_str());
+        return false;
+    }
+
+    std::cout << "[SSH] Host key saved successfully.\n";
     return true;
 }
 
 
-// ============================================================
-//  Authentication
-// ============================================================
+// ---------- authentication ----------
 
 struct KbdContext
 {
     const std::string* password = nullptr;
-
     bool passwordUsed = false;
 };
 
@@ -809,14 +810,10 @@ static void kbdCallback(
         abstract ? static_cast<KbdContext*>(*abstract) : nullptr;
 
     if (name && name_len > 0)
-    {
         std::cout << "\n" << std::string(name, name_len) << "\n";
-    }
 
     if (instruction && instruction_len > 0)
-    {
         std::cout << std::string(instruction, instruction_len) << "\n";
-    }
 
     for (int i = 0; i < num_prompts; i++)
     {
@@ -830,15 +827,13 @@ static void kbdCallback(
         bool isPassword =
             toLower(prompt).find("password") != std::string::npos;
 
-        if (
-            isPassword &&
+        if (isPassword &&
             ctx &&
             ctx->password &&
             !ctx->password->empty() &&
             !ctx->passwordUsed)
         {
             answer = *ctx->password;
-
             ctx->passwordUsed = true;
         }
         else
@@ -846,20 +841,17 @@ static void kbdCallback(
             if (prompts[i].echo)
                 answer = readLine(prompt);
             else
-                answer = readSecret(prompt);
+                answer = plat::readSecret(prompt);
         }
 
-        responses[i].text = _strdup(answer.c_str());
-
-        responses[i].length =
-            static_cast<unsigned int>(answer.size());
+        responses[i].text = plat::cstrdup(answer.c_str());
+        responses[i].length = static_cast<unsigned int>(answer.size());
     }
 }
 
 static void printSessionError(LIBSSH2_SESSION* session)
 {
     char* message = nullptr;
-
     int length = 0;
 
     int code =
@@ -915,11 +907,10 @@ static bool authPublicKey(LIBSSH2_SESSION* session, const Config& cfg)
     if (cfg.keyPath.empty())
     {
         std::cout << "Private key path is not set.\n";
-
         return false;
     }
 
-    if (!fileExists(cfg.keyPath))
+    if (!plat::fileExists(cfg.keyPath))
     {
         std::cout
             << "Private key file not found:\n"
@@ -932,7 +923,7 @@ static bool authPublicKey(LIBSSH2_SESSION* session, const Config& cfg)
     std::string pubPath = cfg.keyPath + ".pub";
 
     const char* pub =
-        fileExists(pubPath) ? pubPath.c_str() : nullptr;
+        plat::fileExists(pubPath) ? pubPath.c_str() : nullptr;
 
     int rc =
         libssh2_userauth_publickey_fromfile(
@@ -976,18 +967,23 @@ static bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)
     if (!agent)
     {
         std::cout << "Cannot initialize SSH agent support.\n";
-
         return false;
     }
 
     if (libssh2_agent_connect(agent) != 0)
     {
+#ifdef _WIN32
         std::cout
             << "Cannot connect to SSH agent. Start Pageant or the "
             "'OpenSSH Authentication Agent' service.\n";
+#else
+        std::cout
+            << "Cannot connect to SSH agent. Start it with:\n"
+            "  eval \"$(ssh-agent -s)\" && ssh-add\n"
+            "and make sure SSH_AUTH_SOCK is set.\n";
+#endif
 
         libssh2_agent_free(agent);
-
         return false;
     }
 
@@ -1023,11 +1019,10 @@ static bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)
 
         anyIdentity = true;
 
-        if (
-            libssh2_agent_userauth(
-                agent,
-                cfg.username.c_str(),
-                identity) == 0)
+        if (libssh2_agent_userauth(
+            agent,
+            cfg.username.c_str(),
+            identity) == 0)
         {
             std::cout
                 << "Agent key accepted: "
@@ -1035,7 +1030,6 @@ static bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)
                 << "\n";
 
             authenticated = true;
-
             break;
         }
 
@@ -1048,9 +1042,7 @@ static bool authAgent(LIBSSH2_SESSION* session, const Config& cfg)
     }
 
     if (!anyIdentity)
-    {
         std::cout << "SSH agent has no keys loaded.\n";
-    }
 
     libssh2_agent_disconnect(agent);
     libssh2_agent_free(agent);
@@ -1133,9 +1125,7 @@ bool authenticate(LIBSSH2_SESSION* session, const Config& cfg)
 
         if (!supports("publickey"))
         {
-            std::cout
-                << "The server does not allow public key login.\n";
-
+            std::cout << "The server does not allow public key login.\n";
             return false;
         }
 
@@ -1145,9 +1135,7 @@ bool authenticate(LIBSSH2_SESSION* session, const Config& cfg)
 
         if (!supports("publickey"))
         {
-            std::cout
-                << "The server does not allow public key login.\n";
-
+            std::cout << "The server does not allow public key login.\n";
             return false;
         }
 
@@ -1171,9 +1159,7 @@ bool authenticate(LIBSSH2_SESSION* session, const Config& cfg)
 }
 
 
-// ============================================================
-//  Connection
-// ============================================================
+// ---------- connection ----------
 
 static void closeConnection(
     LIBSSH2_SESSION*& session,
@@ -1184,19 +1170,15 @@ static void closeConnection(
     if (session)
     {
         if (sendDisconnect)
-        {
             libssh2_session_disconnect(session, reason);
-        }
 
         libssh2_session_free(session);
-
         session = nullptr;
     }
 
     if (sock != INVALID_SOCKET)
     {
         closesocket(sock);
-
         sock = INVALID_SOCKET;
     }
 }
@@ -1211,23 +1193,19 @@ bool openConnection(
     if (sock == INVALID_SOCKET)
     {
         std::cout << "\nCannot create socket.\n";
-
         return false;
     }
 
     sockaddr_in sin{};
 
     sin.sin_family = AF_INET;
-
-    sin.sin_port =
-        htons(static_cast<u_short>(cfg.port));
+    sin.sin_port = htons(static_cast<unsigned short>(cfg.port));
 
     if (inet_pton(AF_INET, cfg.host.c_str(), &sin.sin_addr) <= 0)
     {
         std::cout << "\nInvalid server IP.\n";
 
         closeConnection(session, sock, "", false);
-
         return false;
     }
 
@@ -1244,12 +1222,11 @@ bool openConnection(
         sizeof(sin)) != 0)
     {
         std::cout
-            << "Connection failed (WSA error "
+            << "Connection failed (network error "
             << WSAGetLastError()
             << ").\n";
 
         closeConnection(session, sock, "", false);
-
         return false;
     }
 
@@ -1262,7 +1239,6 @@ bool openConnection(
         std::cout << "Cannot create SSH session.\n";
 
         closeConnection(session, sock, "", false);
-
         return false;
     }
 
@@ -1278,7 +1254,6 @@ bool openConnection(
             << ").\n";
 
         closeConnection(session, sock, "", false);
-
         return false;
     }
 
@@ -1289,7 +1264,6 @@ bool openConnection(
         std::cout << "\nHost key is not trusted. Connection aborted.\n";
 
         closeConnection(session, sock, "Host key rejected", true);
-
         return false;
     }
 
@@ -1298,7 +1272,6 @@ bool openConnection(
         std::cout << "\nAuthentication failed.\n";
 
         closeConnection(session, sock, "Authentication failed", true);
-
         return false;
     }
 
@@ -1308,9 +1281,7 @@ bool openConnection(
 }
 
 
-// ============================================================
-//  Remote commands
-// ============================================================
+// ---------- remote commands ----------
 
 bool executeCommand(
     LIBSSH2_SESSION* session,
@@ -1319,7 +1290,6 @@ bool executeCommand(
     if (!session)
     {
         std::cout << "SSH session is not available.\n";
-
         return false;
     }
 
@@ -1329,7 +1299,6 @@ bool executeCommand(
     if (!channel)
     {
         std::cout << "Cannot open SSH channel.\n";
-
         return false;
     }
 
@@ -1338,7 +1307,6 @@ bool executeCommand(
         std::cout << "Cannot execute command.\n";
 
         libssh2_channel_free(channel);
-
         return false;
     }
 
@@ -1352,7 +1320,6 @@ bool executeCommand(
         if (rc > 0)
         {
             buffer[rc] = '\0';
-
             std::cout << buffer;
         }
         else if (rc == 0)
@@ -1362,7 +1329,6 @@ bool executeCommand(
         else
         {
             std::cout << "\nError reading server response.\n";
-
             break;
         }
     }
@@ -1384,7 +1350,6 @@ bool changeDirectory(
     if (!session)
     {
         std::cout << "SSH session is not available.\n";
-
         return false;
     }
 
@@ -1415,7 +1380,6 @@ bool changeDirectory(
     if (!channel)
     {
         std::cout << "Cannot open SSH channel.\n";
-
         return false;
     }
 
@@ -1424,7 +1388,6 @@ bool changeDirectory(
         std::cout << "Cannot change directory.\n";
 
         libssh2_channel_free(channel);
-
         return false;
     }
 
@@ -1440,7 +1403,6 @@ bool changeDirectory(
         if (rc > 0)
         {
             buffer[rc] = '\0';
-
             result += buffer;
         }
         else
@@ -1455,8 +1417,7 @@ bool changeDirectory(
 
     libssh2_channel_free(channel);
 
-    while (
-        !result.empty() &&
+    while (!result.empty() &&
         (result.back() == '\n' || result.back() == '\r'))
     {
         result.pop_back();
@@ -1465,7 +1426,6 @@ bool changeDirectory(
     if (result.empty())
     {
         std::cout << "Directory does not exist.\n";
-
         return false;
     }
 
@@ -1475,9 +1435,7 @@ bool changeDirectory(
 }
 
 
-// ============================================================
-//  Server terminal
-// ============================================================
+// ---------- server terminal ----------
 
 void runServerTerminal(
     LIBSSH2_SESSION* session,
@@ -1492,7 +1450,8 @@ void runServerTerminal(
     FileGuard fileGuard(session, cfg.password);
 
     std::cout << "\n";
-    std::cout << "ServerGuard terminal - " << cfg.name << "\n";
+    std::cout << "ServerGuard v" << SERVERGUARD_VERSION
+        << " terminal - " << cfg.name << "\n";
     std::cout << "Type 'help' to show all commands and modules.\n";
     std::cout << "Type 'ls' to list files.\n";
     std::cout << "Type 'pwd' to show current directory.\n";
@@ -1506,6 +1465,8 @@ void runServerTerminal(
     std::cout << "Type 'ports' to manage firewall ports (open/close/block).\n";
     std::cout << "Type 'web install' to install the web interface.\n";
     std::cout << "Type 'web status | web url | web remove' to manage it.\n";
+    std::cout << "Type 'update' to close ServerGuard and run the updater ("
+        << UPDATER_NAME << ").\n";
     std::cout << "Type 'exit' to disconnect and return to the server list.\n";
     std::cout << "\n";
     std::cout << "Type 'help' for detailed information.\n";
@@ -1522,6 +1483,7 @@ void runServerTerminal(
             << ":"
             << currentDirectory
             << "$ ";
+        std::cout.flush();
 
         std::string command;
 
@@ -1534,22 +1496,31 @@ void runServerTerminal(
         command = trim(command);
 
         if (command.empty())
-        {
             continue;
-        }
 
         if (command == "exit" || command == "servers")
-        {
             break;
-        }
 
         try
         {
             if (command == "help")
             {
                 showHelp();
-
                 continue;
+            }
+
+            {
+                std::string lc = toLower(command);
+
+                if (lc == "update" || lc == "обновить" || lc == "upgrade")
+                {
+                    g_updateRequested = true;
+
+                    std::cout
+                        << "Closing session and starting the updater...\n";
+
+                    break;
+                }
             }
 
             {
@@ -1617,8 +1588,7 @@ void runServerTerminal(
                 continue;
             }
 
-            if (
-                command == "sshkeys" ||
+            if (command == "sshkeys" ||
                 command == "ssh-key-guard" ||
                 command == "sshkeyguard")
             {
@@ -1633,7 +1603,6 @@ void runServerTerminal(
             if (command == "fileguard")
             {
                 fileGuard.menu();
-
                 continue;
             }
 
@@ -1662,9 +1631,7 @@ void runServerTerminal(
                 std::string directory = trim(command.substr(3));
 
                 if (directory.empty())
-                {
                     continue;
-                }
 
                 changeDirectory(session, currentDirectory, directory);
 
@@ -1679,7 +1646,7 @@ void runServerTerminal(
             std::cout
                 << "Available commands: "
                 << "help, ls, pwd, cd, nano, security, telegram, "
-                << "hardening, sshkeys, fileguard, ports, web, exit\n";
+                << "hardening, sshkeys, fileguard, ports, web, update, exit\n";
         }
         catch (const std::exception& e)
         {
@@ -1693,9 +1660,7 @@ void runServerTerminal(
 }
 
 
-// ============================================================
-//  One connected session (modules + terminal + cleanup)
-// ============================================================
+// ---------- one connected session ----------
 
 static void runSession(Config& cfg, SOCKET& sock, LIBSSH2_SESSION*& session)
 {
@@ -1786,9 +1751,7 @@ static void runSession(Config& cfg, SOCKET& sock, LIBSSH2_SESSION*& session)
 }
 
 
-// ============================================================
-//  Connect to a profile (with retry / edit / back)
-// ============================================================
+// ---------- connecting to a profile ----------
 
 enum class FailAction
 {
@@ -1844,7 +1807,6 @@ static FailAction askFailAction(const Config& cfg)
     }
 }
 
-// Ask for secrets that are not stored in the profile
 static void ensureSecrets(Config& cfg)
 {
     switch (cfg.auth)
@@ -1853,23 +1815,23 @@ static void ensureSecrets(Config& cfg)
     case AuthMethod::Interactive:
 
         if (cfg.password.empty())
-            cfg.password = readSecret("Password for " + cfg.username + ": ");
+            cfg.password = plat::readSecret("Password for " + cfg.username + ": ");
         break;
 
     case AuthMethod::PublicKey:
 
         if (cfg.passphrase.empty())
-            cfg.passphrase = readSecret("Key passphrase (Enter if none): ");
+            cfg.passphrase = plat::readSecret("Key passphrase (Enter if none): ");
 
         if (cfg.password.empty())
-            cfg.password = readSecret(
+            cfg.password = plat::readSecret(
                 "Sudo password for server modules (Enter to skip): ");
         break;
 
     case AuthMethod::Agent:
 
         if (cfg.password.empty())
-            cfg.password = readSecret(
+            cfg.password = plat::readSecret(
                 "Sudo password for server modules (Enter to skip): ");
         break;
     }
@@ -1914,7 +1876,6 @@ static void connectToServer(std::vector<Config>& all, size_t index)
         {
             runSession(cfg, sock, session);
 
-            // do not keep secrets in memory after the session
             if (!cfg.savePassword)
                 cfg.password.clear();
 
@@ -1925,7 +1886,6 @@ static void connectToServer(std::vector<Config>& all, size_t index)
 
         FailAction action = askFailAction(cfg);
 
-        // forget wrong secrets so they are asked again
         cfg.passphrase.clear();
 
         if (!cfg.savePassword || action == FailAction::Retry)
@@ -1946,15 +1906,14 @@ static void connectToServer(std::vector<Config>& all, size_t index)
 }
 
 
-// ============================================================
-//  Server list (main menu)
-// ============================================================
+// ---------- server list (main menu) ----------
 
 static void printServerList(const std::vector<Config>& list)
 {
     std::cout << "\n";
     std::cout << "=========================================================\n";
-    std::cout << "                  SERVERGUARD - MY SERVERS\n";
+    std::cout << "            SERVERGUARD v" << SERVERGUARD_VERSION
+        << " - MY SERVERS\n";
     std::cout << "=========================================================\n";
 
     if (list.empty())
@@ -2028,7 +1987,6 @@ static void serverMenu()
 
         if (!std::cin.good())
         {
-            // input stream closed - leave quietly
             std::cin.clear();
             return;
         }
@@ -2039,9 +1997,7 @@ static void serverMenu()
         std::string lc = toLower(input);
 
         if (lc == "q" || lc == "quit" || lc == "exit")
-        {
             return;
-        }
 
         if (lc == "a" || lc == "add")
         {
@@ -2134,6 +2090,9 @@ static void serverMenu()
                 std::cout << "\nUnknown error.\n";
             }
 
+            if (g_updateRequested)
+                return;
+
             continue;
         }
 
@@ -2142,22 +2101,32 @@ static void serverMenu()
 }
 
 
-// ============================================================
-//  main
-// ============================================================
-
-int main()
+int main(int argc, char** argv)
 {
+    if (argc > 1)
+    {
+        std::string arg = argv[1];
+
+        if (arg == "--version" || arg == "-v")
+        {
+            std::cout << "ServerGuard " << SERVERGUARD_VERSION << "\n";
+            return 0;
+        }
+    }
+
     std::cout << "=============================\n";
     std::cout << "        ServerGuard\n";
+    std::cout << "        version " << SERVERGUARD_VERSION << "\n";
     std::cout << "=============================\n";
 
-    WSADATA wsadata;
+#ifndef _WIN32
+    // Linux: check for a new version, install it and restart.
+    upd::checkAndUpdate(SERVERGUARD_VERSION, argv);
+#endif
 
-    if (WSAStartup(MAKEWORD(2, 2), &wsadata) != 0)
+    if (!plat::initNetwork())
     {
-        std::cout << "WSAStartup failed.\n";
-
+        std::cout << "Network initialization failed.\n";
         return 1;
     }
 
@@ -2165,14 +2134,14 @@ int main()
     {
         std::cout << "libssh2 initialization failed.\n";
 
-        WSACleanup();
-
+        plat::cleanupNetwork();
         return 1;
     }
 
     try
     {
         migrateLegacyConfig();
+        ensureProfilesFile();
 
         serverMenu();
     }
@@ -2189,7 +2158,18 @@ int main()
 
     libssh2_exit();
 
-    WSACleanup();
+    plat::cleanupNetwork();
+
+    if (g_updateRequested)
+    {
+        if (!runUpdater())
+        {
+            std::cout << "Update was not started. Press Enter to exit...";
+
+            std::string dummy;
+            std::getline(std::cin, dummy);
+        }
+    }
 
     return 0;
 }

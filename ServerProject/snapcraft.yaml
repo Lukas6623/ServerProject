@@ -1,0 +1,29 @@
+name: serverguard
+version: '1.1.13'
+summary: ServerGuard Linux server security manager
+description: |
+  ServerGuard is a C++ application for managing SSH connections
+  and server security on Linux.
+base: core24
+grade: devel
+confinement: classic
+
+apps:
+  serverguard:
+    command: usr/bin/ServerGuard
+
+parts:
+  serverguard:
+    plugin: cmake
+    source: .
+    build-packages:
+      - g++
+      - cmake
+      - make
+      - libssh2-1-dev
+      - libssl-dev
+    stage-packages:
+      - libssh2-1t64
+    cmake-parameters:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCMAKE_INSTALL_PREFIX=/usr

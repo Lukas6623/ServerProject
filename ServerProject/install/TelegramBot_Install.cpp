@@ -159,7 +159,13 @@ bool TelegramBot::installInternal(const std::string* webToken)
     std::string logs;
     int logExitCode = -1;
 
-    executeRemote("journalctl -u " + TELEGRAM_SERVICE + " -n 50 --no-pager",
+    
+    
+    
+    
+    
+    
+    ("journalctl -u " + TELEGRAM_SERVICE + " -n 50 --no-pager",
         logs, logExitCode, false);
 
     if (!logs.empty())

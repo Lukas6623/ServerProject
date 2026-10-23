@@ -19,7 +19,6 @@ private:
 
     bool hardeningEnabled;
 
-    // Result of the (cached) root/sudo check.
     bool privilegesChecked;
     bool privilegesOk;
 

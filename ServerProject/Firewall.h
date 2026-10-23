@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include <iostream>
@@ -12,17 +11,29 @@
 #include <cctype>
 #include <regex>
 #include <limits>
+#include <cstdlib>
+#include <cstdio>
+#include <filesystem>
+#include <chrono>
+#include <cstdint>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <windows.h>
 #include <urlmon.h>
+#pragma comment(lib, "urlmon.lib")
+#else
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 #include <libssh2.h>
 #include <openssl/evp.h>
 
 #include "config.h"
-
-#pragma comment(lib, "urlmon.lib")
 
 class FirewallManager
 {
@@ -68,25 +79,16 @@ public:
         {
             std::cout
                 << "\n========================================\n"
-                << "          PORT MANAGER (UFW)\n"
-                << "========================================\n"
-                << " 1. Install / update on server\n"
-                << " 2. Service status\n"
-                << " 3. Firewall status\n"
-                << " 4. Show rules (numbered)\n"
-                << " 5. Listening ports\n"
-                << " 6. Open port\n"
-                << " 7. Close port (remove allow rule)\n"
-                << " 8. Block port (deny)\n"
-                << " 9. Unblock port\n"
-                << "10. Limit port (anti-bruteforce)\n"
-                << "11. Delete rule by number\n"
-                << "12. Enable firewall\n"
-                << "13. Disable firewall\n"
-                << "14. Protected ports\n"
-                << "15. Default policy\n"
-                << "16. Remove service\n"
-                << " 0. Back\n\n";
+                << " " << kModuleName << " v" << kModuleVersion << "\n"
+                << "========================================\n\n";
+
+            for (const ModuleCommand& item : kModuleCommands)
+            {
+                std::cout << std::setw(2) << item.key
+                    << ". " << item.title << "\n";
+            }
+
+            std::cout << "\n";
 
             const std::string choice = ask("Select: ");
 
@@ -100,32 +102,32 @@ public:
             else if (choice == "3")
                 call({ "status" });
             else if (choice == "4")
-                call({ "rules" });
+                call({ "enable" });
             else if (choice == "5")
-                call({ "listening" });
+            {
+                if (confirm("Disable the firewall completely?"))
+                    call({ "disable", "--force" });
+            }
             else if (choice == "6")
-                portAction("allow", false);
+                call({ "rules" });
             else if (choice == "7")
-                portAction("close", true);
+                call({ "listening" });
             else if (choice == "8")
-                portAction("deny", true);
+                portAction("allow", false);
             else if (choice == "9")
-                portAction("unblock", false);
+                portAction("close", true);
             else if (choice == "10")
-                portAction("limit", false);
+                portAction("deny", true);
             else if (choice == "11")
+                portAction("unblock", false);
+            else if (choice == "12")
+                portAction("limit", false);
+            else if (choice == "13")
             {
                 const std::string number = ask("Rule number: ");
 
                 if (!number.empty())
                     call({ "delete", number });
-            }
-            else if (choice == "12")
-                call({ "enable" });
-            else if (choice == "13")
-            {
-                if (confirm("Disable the firewall completely?"))
-                    call({ "disable", "--force" });
             }
             else if (choice == "14")
                 protectedMenu();
@@ -156,12 +158,40 @@ public:
     }
 
 private:
+    struct ModuleCommand
+    {
+        const char* key;
+        const char* title;
+    };
+
+    static constexpr const char* kModuleName = "ServerGuard Firewall Manager";
+    static constexpr const char* kModuleVersion = "1.0.0";
+
+    inline static constexpr ModuleCommand kModuleCommands[] = {
+        { "1",  "Install / update on server" },
+        { "2",  "Service status" },
+        { "3",  "Firewall status" },
+        { "4",  "Enable firewall" },
+        { "5",  "Disable firewall" },
+        { "6",  "Show rules (numbered)" },
+        { "7",  "Listening ports" },
+        { "8",  "Open port" },
+        { "9",  "Close port (remove allow rule)" },
+        { "10", "Block port (deny)" },
+        { "11", "Unblock port" },
+        { "12", "Limit port (anti-bruteforce)" },
+        { "13", "Delete rule by number" },
+        { "14", "Protected ports" },
+        { "15", "Default policy" },
+        { "16", "Remove service" },
+        { "0",  "Back" },
+    };
+
     LIBSSH2_SESSION* session_ = nullptr;
     std::string password_;
     std::string user_;
     int sshPort_ = 22;
 
-    // Состояние текущего экземпляра класса.
     bool installed_ = false;
 
     static constexpr size_t kMaxManifestSize = 64 * 1024;
@@ -171,8 +201,6 @@ private:
     static constexpr const char* kRemotePath =
         "/opt/serverguard/firewall_manager.py";
 
-    // 32 байта публичного Ed25519-ключа.
-    // Закрытый ключ не должен находиться в приложении.
     inline static constexpr unsigned char kPublicKey[32] = {
         0xb3, 0xb2, 0x08, 0xce, 0x51, 0xdc, 0x02, 0x8e,
         0xa5, 0xb5, 0x9c, 0xe6, 0xd9, 0x51, 0x5a, 0x9b,
@@ -207,7 +235,6 @@ private:
         return answer == "yes" || answer == "y";
     }
 
-    // Экранирование аргумента для shell на удалённом Linux.
     static std::string q(const std::string& value)
     {
         std::string result = "'";
@@ -329,7 +356,6 @@ private:
                 if (libssh2_channel_eof(channel))
                     break;
 
-                // Для неблокирующей SSH-сессии нужна обработка EAGAIN.
                 break;
             }
             else if (count == LIBSSH2_ERROR_EAGAIN)
@@ -444,16 +470,74 @@ private:
             call({ "protect", action, port });
     }
 
+    static bool makeTempPath(
+        const std::string& prefix,
+        std::string& result)
+    {
+        try
+        {
+            const auto directory =
+                std::filesystem::temp_directory_path();
+
+            const auto stamp =
+                std::chrono::high_resolution_clock::now()
+                .time_since_epoch()
+                .count();
+
+            for (unsigned int attempt = 0; attempt < 20; ++attempt)
+            {
+                const std::string name =
+                    prefix + "_" + std::to_string(stamp) + "_" +
+                    std::to_string(attempt) + ".tmp";
+
+                const auto path = directory / name;
+
+                if (!std::filesystem::exists(path))
+                {
+                    result = path.string();
+                    return true;
+                }
+            }
+        }
+        catch (...)
+        {
+            return false;
+        }
+
+        return false;
+    }
+
+    static void removeTempFile(const std::string& path)
+    {
+        if (path.empty())
+            return;
+
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+    }
+
     static bool downloadToFile(
         const std::string& url,
         const std::string& path)
     {
+        if (url.empty() || path.empty())
+            return false;
+
+#ifdef _WIN32
         return URLDownloadToFileA(
             nullptr,
             url.c_str(),
             path.c_str(),
             0,
             nullptr) == S_OK;
+#else
+        const std::string command =
+            "curl --fail --location --silent --show-error "
+            "--max-time 60 --output " +
+            q(path) + " " + q(url);
+
+        return std::system(command.c_str()) == 0;
+#endif
     }
 
     static bool readBinaryFile(
@@ -554,8 +638,6 @@ private:
             manifest.size()) == 1;
     }
 
-    // Проверяет поля манифеста и извлекает SHA-256.
-    // Это ограниченная проверка JSON через regex.
     static bool getExpectedScriptHash(
         const std::string& manifest,
         std::string& expectedHash)
@@ -758,45 +840,24 @@ private:
             return false;
         }
 
-        char tempDirectory[MAX_PATH] = {};
+        std::string manifestPath;
+        std::string signaturePath;
+        std::string scriptPath;
 
-        if (!GetTempPathA(MAX_PATH, tempDirectory))
+        if (!makeTempPath("serverguard_manifest", manifestPath) ||
+            !makeTempPath("serverguard_signature", signaturePath) ||
+            !makeTempPath("serverguard_script", scriptPath))
         {
             std::cout
-                << "Cannot determine Windows temp directory.\n";
-            return false;
-        }
-
-        char manifestPath[MAX_PATH] = {};
-        char signaturePath[MAX_PATH] = {};
-        char scriptPath[MAX_PATH] = {};
-
-        if (!GetTempFileNameA(
-            tempDirectory, "sgm", 0, manifestPath) ||
-            !GetTempFileNameA(
-                tempDirectory, "sgs", 0, signaturePath) ||
-            !GetTempFileNameA(
-                tempDirectory, "sgp", 0, scriptPath))
-        {
-            std::cout << "Cannot create temporary files.\n";
-
-            if (manifestPath[0])
-                DeleteFileA(manifestPath);
-
-            if (signaturePath[0])
-                DeleteFileA(signaturePath);
-
-            if (scriptPath[0])
-                DeleteFileA(scriptPath);
-
+                << "Cannot determine a usable temporary directory.\n";
             return false;
         }
 
         const auto cleanup = [&]()
             {
-                DeleteFileA(manifestPath);
-                DeleteFileA(signaturePath);
-                DeleteFileA(scriptPath);
+                removeTempFile(manifestPath);
+                removeTempFile(signaturePath);
+                removeTempFile(scriptPath);
             };
 
         std::cout << "Downloading signed module files...\n";

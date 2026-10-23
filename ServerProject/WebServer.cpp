@@ -1,4 +1,4 @@
-#define NOMINMAX
+
 #include "WebServer.h"
 #include "SSHKeyGuard.h"
 #include "Security.h"
@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cerrno>
+#include <climits>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -15,27 +17,92 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <thread>
 
 static constexpr size_t MAX_HEADER_BYTES = 16 * 1024;
 static constexpr size_t MAX_BODY_BYTES = 64 * 1024;
 static constexpr size_t MAX_FILE_BYTES = 32 * 1024 * 1024;
 static constexpr size_t MAX_CLIENTS = 32;
-
 static constexpr int SOCKET_TIMEOUT_MS = 15000;
 
 static const char* AUTH_COOKIE = "sg_token";
 
 static const std::string FILEGUARD_SERVICE = "serverguard-fileguard";
-
 static const std::string FILEGUARD_DATA_DIR = "/opt/serverguard/data/";
 static const std::string FILEGUARD_EVENTS = FILEGUARD_DATA_DIR + "file_events.json";
 static const std::string FILEGUARD_BASELINE = FILEGUARD_DATA_DIR + "fileguard_baseline.json";
 static const std::string FILEGUARD_STATE = FILEGUARD_DATA_DIR + "fileguard_state.json";
 
+static int webSocketError()
+{
+    return WSAGetLastError();
+}
+
+static void closeWebSocket(SOCKET socketHandle)
+{
+    if (socketHandle != INVALID_SOCKET)
+        closesocket(socketHandle);
+}
+
+static bool initializeWebSockets()
+{
+    return plat::initNetwork();
+}
+
+static void cleanupWebSockets()
+{
+    plat::cleanupNetwork();
+}
+
+static void setSocketTimeouts(SOCKET socketHandle)
+{
+#ifdef _WIN32
+    DWORD timeout = SOCKET_TIMEOUT_MS;
+
+    setsockopt(
+        socketHandle,
+        SOL_SOCKET,
+        SO_RCVTIMEO,
+        reinterpret_cast<const char*>(&timeout),
+        sizeof(timeout));
+
+    setsockopt(
+        socketHandle,
+        SOL_SOCKET,
+        SO_SNDTIMEO,
+        reinterpret_cast<const char*>(&timeout),
+        sizeof(timeout));
+#else
+    timeval timeout{};
+    timeout.tv_sec = SOCKET_TIMEOUT_MS / 1000;
+    timeout.tv_usec = (SOCKET_TIMEOUT_MS % 1000) * 1000;
+
+    setsockopt(
+        socketHandle,
+        SOL_SOCKET,
+        SO_RCVTIMEO,
+        &timeout,
+        sizeof(timeout));
+
+    setsockopt(
+        socketHandle,
+        SOL_SOCKET,
+        SO_SNDTIMEO,
+        &timeout,
+        sizeof(timeout));
+#endif
+}
+
 static std::string toLower(std::string value)
 {
-    std::transform(value.begin(), value.end(), value.begin(),
-        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](unsigned char c)
+        {
+            return static_cast<char>(std::tolower(c));
+        });
 
     return value;
 }
@@ -44,13 +111,19 @@ static std::string trim(const std::string& value)
 {
     size_t start = 0;
 
-    while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])))
+    while (start < value.size() &&
+        std::isspace(static_cast<unsigned char>(value[start])))
+    {
         ++start;
+    }
 
     size_t end = value.size();
 
-    while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])))
+    while (end > start &&
+        std::isspace(static_cast<unsigned char>(value[end - 1])))
+    {
         --end;
+    }
 
     return value.substr(start, end - start);
 }
@@ -60,7 +133,10 @@ static bool hasSuffix(const std::string& value, const std::string& suffix)
     if (value.size() < suffix.size())
         return false;
 
-    return value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+    return value.compare(
+        value.size() - suffix.size(),
+        suffix.size(),
+        suffix) == 0;
 }
 
 static bool safeEquals(const std::string& a, const std::string& b)
@@ -83,7 +159,9 @@ static std::string generateToken()
     std::mt19937_64 generator(
         static_cast<unsigned long long>(rd()) ^
         static_cast<unsigned long long>(
-            std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+            std::chrono::high_resolution_clock::now()
+            .time_since_epoch()
+            .count()));
 
     std::ostringstream output;
     output << std::hex << std::setfill('0');
@@ -94,7 +172,9 @@ static std::string generateToken()
     return output.str();
 }
 
-static std::string queryParam(const std::string& query, const std::string& wanted)
+static std::string queryParam(
+    const std::string& query,
+    const std::string& wanted)
 {
     size_t position = 0;
 
@@ -105,7 +185,10 @@ static std::string queryParam(const std::string& query, const std::string& wante
         if (ampersand == std::string::npos)
             ampersand = query.size();
 
-        std::string part = query.substr(position, ampersand - position);
+        std::string part = query.substr(
+            position,
+            ampersand - position);
+
         size_t equal = part.find('=');
 
         if (equal != std::string::npos)
@@ -123,7 +206,9 @@ static std::string queryParam(const std::string& query, const std::string& wante
     return "";
 }
 
-static std::string getHeader(const HttpRequest& request, const std::string& name)
+static std::string getHeader(
+    const HttpRequest& request,
+    const std::string& name)
 {
     std::string wanted = toLower(name);
     auto iterator = request.headers.find(wanted);
@@ -175,8 +260,11 @@ WebServer::WebServer(
     serverSocket(INVALID_SOCKET),
     running(false)
 {
-    allowedHosts.push_back(toLower(host) + ":" + std::to_string(port));
-    allowedHosts.push_back("localhost:" + std::to_string(port));
+    allowedHosts.push_back(
+        toLower(host) + ":" + std::to_string(port));
+
+    allowedHosts.push_back(
+        "localhost:" + std::to_string(port));
 }
 
 WebServer::~WebServer()
@@ -206,7 +294,8 @@ void WebServer::setTelegramBot(TelegramBot* telegramModule)
 
 std::string WebServer::accessUrl() const
 {
-    return "http://" + host + ":" + std::to_string(port) + "/?token=" + token;
+    return "http://" + host + ":" +
+        std::to_string(port) + "/?token=" + token;
 }
 
 bool WebServer::start()
@@ -220,9 +309,13 @@ bool WebServer::start()
     {
         std::filesystem::path root(webRoot);
 
-        if (!std::filesystem::exists(root) || !std::filesystem::is_directory(root))
+        if (!std::filesystem::exists(root) ||
+            !std::filesystem::is_directory(root))
         {
-            std::cerr << "[WebServer] Web root does not exist: " << webRoot << std::endl;
+            std::cerr
+                << "[WebServer] Web root does not exist: "
+                << webRoot << std::endl;
+
             return false;
         }
 
@@ -230,7 +323,10 @@ bool WebServer::start()
 
         if (!std::filesystem::exists(index))
         {
-            std::cerr << "[WebServer] index.html not found: " << index.string() << std::endl;
+            std::cerr
+                << "[WebServer] index.html not found: "
+                << index.string() << std::endl;
+
             return false;
         }
     }
@@ -239,70 +335,108 @@ bool WebServer::start()
         return false;
     }
 
-    WSADATA wsaData{};
-    int wsaResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
-
-    if (wsaResult != 0)
+    if (!initializeWebSockets())
     {
-        std::cerr << "[WebServer] WSAStartup failed: " << wsaResult << std::endl;
+        std::cerr
+            << "[WebServer] Network initialization failed: "
+            << webSocketError() << std::endl;
+
         return false;
     }
 
-    SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    SOCKET listenSocket = socket(
+        AF_INET,
+        SOCK_STREAM,
+        IPPROTO_TCP);
 
     if (listenSocket == INVALID_SOCKET)
     {
-        std::cerr << "[WebServer] socket() failed: " << WSAGetLastError() << std::endl;
-        WSACleanup();
+        std::cerr
+            << "[WebServer] socket() failed: "
+            << webSocketError() << std::endl;
+
+        cleanupWebSockets();
         return false;
     }
 
-    BOOL exclusive = TRUE;
+#ifdef _WIN32
+    plat::setExclusiveAddrUse(listenSocket);
+#else
+    {
+        int reuseAddress = 1;
 
-    setsockopt(listenSocket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
-        reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
+        setsockopt(
+            listenSocket,
+            SOL_SOCKET,
+            SO_REUSEADDR,
+            &reuseAddress,
+            sizeof(reuseAddress));
+    }
+#endif
 
     sockaddr_in address{};
     address.sin_family = AF_INET;
-    address.sin_port = htons(static_cast<u_short>(port));
+    address.sin_port = htons(
+        static_cast<unsigned short>(port));
 
-    if (host == "0.0.0.0" || host == "*" || host.empty())
+    if (host == "0.0.0.0" ||
+        host == "*" ||
+        host.empty())
     {
         address.sin_addr.s_addr = htonl(INADDR_ANY);
     }
     else
     {
-        if (inet_pton(AF_INET, host.c_str(), &address.sin_addr) != 1)
+        if (inet_pton(
+            AF_INET,
+            host.c_str(),
+            &address.sin_addr) != 1)
         {
-            std::cerr << "[WebServer] Invalid host: " << host << std::endl;
-            closesocket(listenSocket);
-            WSACleanup();
+            std::cerr
+                << "[WebServer] Invalid host: "
+                << host << std::endl;
+
+            closeWebSocket(listenSocket);
+            cleanupWebSockets();
             return false;
         }
     }
 
-    if (bind(listenSocket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR)
+    if (bind(
+        listenSocket,
+        reinterpret_cast<sockaddr*>(&address),
+        sizeof(address)) < 0)
     {
-        std::cerr << "[WebServer] bind() failed: " << WSAGetLastError() << std::endl;
-        closesocket(listenSocket);
-        WSACleanup();
+        std::cerr
+            << "[WebServer] bind() failed: "
+            << webSocketError() << std::endl;
+
+        closeWebSocket(listenSocket);
+        cleanupWebSockets();
         return false;
     }
 
-    if (listen(listenSocket, SOMAXCONN) == SOCKET_ERROR)
+    if (listen(listenSocket, SOMAXCONN) < 0)
     {
-        std::cerr << "[WebServer] listen() failed: " << WSAGetLastError() << std::endl;
-        closesocket(listenSocket);
-        WSACleanup();
+        std::cerr
+            << "[WebServer] listen() failed: "
+            << webSocketError() << std::endl;
+
+        closeWebSocket(listenSocket);
+        cleanupWebSockets();
         return false;
     }
 
     serverSocket.store(listenSocket);
     running.store(true);
 
-    serverThread = std::thread(&WebServer::serverLoop, this);
+    serverThread = std::thread(
+        &WebServer::serverLoop,
+        this);
 
-    std::cout << "[WebServer] Started: " << accessUrl() << std::endl;
+    std::cout
+        << "[WebServer] Started: "
+        << accessUrl() << std::endl;
 
     if (sshKeyGuard.load())
         std::cout << "[WebServer] SSH Key Guard connected" << std::endl;
@@ -337,16 +471,24 @@ void WebServer::serverLoop()
             break;
 
         sockaddr_in clientAddress{};
-        int clientAddressSize = sizeof(clientAddress);
 
-        SOCKET clientSocket = accept(listenSocket,
-            reinterpret_cast<sockaddr*>(&clientAddress), &clientAddressSize);
+#ifdef _WIN32
+        int clientAddressSize = sizeof(clientAddress);
+#else
+        socklen_t clientAddressSize = sizeof(clientAddress);
+#endif
+
+        SOCKET clientSocket = accept(
+            listenSocket,
+            reinterpret_cast<sockaddr*>(&clientAddress),
+            &clientAddressSize);
 
         if (clientSocket == INVALID_SOCKET)
         {
             if (!running.load())
                 break;
 
+            plat::sleepMs(10);
             continue;
         }
 
@@ -364,35 +506,36 @@ void WebServer::serverLoop()
 
         if (!accepted)
         {
-            sendResponse(clientSocket, 503, "text/plain; charset=utf-8", "Too many connections.");
-            closesocket(clientSocket);
+            setSocketTimeouts(clientSocket);
+
+            sendResponse(
+                clientSocket,
+                503,
+                "text/plain; charset=utf-8",
+                "Too many connections.");
+
+            closeWebSocket(clientSocket);
             continue;
         }
 
-        int timeout = SOCKET_TIMEOUT_MS;
-
-        setsockopt(clientSocket, SOL_SOCKET, SO_RCVTIMEO,
-            reinterpret_cast<const char*>(&timeout), sizeof(timeout));
-
-        setsockopt(clientSocket, SOL_SOCKET, SO_SNDTIMEO,
-            reinterpret_cast<const char*>(&timeout), sizeof(timeout));
+        setSocketTimeouts(clientSocket);
 
         std::thread([this, clientSocket]()
             {
                 handleClient(clientSocket);
-                closesocket(clientSocket);
 
-                {
-                    std::lock_guard<std::mutex> lock(clientsMutex);
-                    clients.erase(clientSocket);
-                }
-
+                std::lock_guard<std::mutex> lock(clientsMutex);
+                closeWebSocket(clientSocket);
+                clients.erase(clientSocket);
                 clientsCv.notify_all();
             }).detach();
     }
 }
 
-bool WebServer::readRequest(SOCKET clientSocket, HttpRequest& request, int& errorStatus)
+bool WebServer::readRequest(
+    SOCKET clientSocket,
+    HttpRequest& request,
+    int& errorStatus)
 {
     errorStatus = 400;
 
@@ -403,12 +546,13 @@ bool WebServer::readRequest(SOCKET clientSocket, HttpRequest& request, int& erro
 
     while (true)
     {
-        int received = recv(clientSocket, temp, sizeof(temp), 0);
+        int received = static_cast<int>(
+            recv(clientSocket, temp, sizeof(temp), 0));
 
         if (received <= 0)
             return false;
 
-        buffer.append(temp, received);
+        buffer.append(temp, static_cast<size_t>(received));
 
         if (buffer.size() > MAX_HEADER_BYTES + MAX_BODY_BYTES)
         {
@@ -419,7 +563,15 @@ bool WebServer::readRequest(SOCKET clientSocket, HttpRequest& request, int& erro
         size_t headerEnd = buffer.find("\r\n\r\n");
 
         if (headerEnd == std::string::npos)
+        {
+            if (buffer.size() > MAX_HEADER_BYTES)
+            {
+                errorStatus = 413;
+                return false;
+            }
+
             continue;
+        }
 
         size_t headerSize = headerEnd + 4;
 
@@ -442,11 +594,19 @@ bool WebServer::readRequest(SOCKET clientSocket, HttpRequest& request, int& erro
         std::istringstream requestStream(requestLine);
         std::string httpVersion;
 
-        if (!(requestStream >> request.method >> request.target >> httpVersion))
+        if (!(requestStream >>
+            request.method >>
+            request.target >>
+            httpVersion))
+        {
             return false;
+        }
 
-        if (httpVersion != "HTTP/1.0" && httpVersion != "HTTP/1.1")
+        if (httpVersion != "HTTP/1.0" &&
+            httpVersion != "HTTP/1.1")
+        {
             return false;
+        }
 
         size_t question = request.target.find('?');
 
@@ -476,20 +636,25 @@ bool WebServer::readRequest(SOCKET clientSocket, HttpRequest& request, int& erro
             if (colon == std::string::npos)
                 continue;
 
-            std::string name = toLower(trim(line.substr(0, colon)));
-            std::string value = trim(line.substr(colon + 1));
+            std::string name = toLower(
+                trim(line.substr(0, colon)));
+
+            std::string value = trim(
+                line.substr(colon + 1));
 
             request.headers[name] = value;
         }
 
         size_t contentLength = 0;
-        auto lengthIterator = request.headers.find("content-length");
+        auto lengthIterator =
+            request.headers.find("content-length");
 
         if (lengthIterator != request.headers.end())
         {
             try
             {
-                unsigned long long parsed = std::stoull(lengthIterator->second);
+                unsigned long long parsed =
+                    std::stoull(lengthIterator->second);
 
                 if (parsed > MAX_BODY_BYTES)
                 {
@@ -511,7 +676,10 @@ bool WebServer::readRequest(SOCKET clientSocket, HttpRequest& request, int& erro
 
         if (alreadyReceived > contentLength)
         {
-            request.body = buffer.substr(headerSize, contentLength);
+            request.body = buffer.substr(
+                headerSize,
+                contentLength);
+
             return true;
         }
 
@@ -520,13 +688,20 @@ bool WebServer::readRequest(SOCKET clientSocket, HttpRequest& request, int& erro
 
         while (request.body.size() < contentLength)
         {
-            int needed = static_cast<int>(std::min(sizeof(temp), contentLength - request.body.size()));
-            int received = recv(clientSocket, temp, needed, 0);
+            int needed = static_cast<int>(
+                std::min(
+                    sizeof(temp),
+                    contentLength - request.body.size()));
 
-            if (received <= 0)
+            int bodyReceived = static_cast<int>(
+                recv(clientSocket, temp, needed, 0));
+
+            if (bodyReceived <= 0)
                 return false;
 
-            request.body.append(temp, received);
+            request.body.append(
+                temp,
+                static_cast<size_t>(bodyReceived));
         }
 
         return true;
@@ -545,7 +720,9 @@ bool WebServer::isAuthorized(const HttpRequest& request) const
 
     while (position != std::string::npos)
     {
-        if (position == 0 || cookie[position - 1] == ';')
+        if (position == 0 ||
+            cookie[position - 1] == ';' ||
+            cookie[position - 1] == ' ')
         {
             size_t valueStart = position + wanted.size();
             size_t valueEnd = cookie.find(';', valueStart);
@@ -553,7 +730,8 @@ bool WebServer::isAuthorized(const HttpRequest& request) const
             if (valueEnd == std::string::npos)
                 valueEnd = cookie.size();
 
-            std::string value = trim(cookie.substr(valueStart, valueEnd - valueStart));
+            std::string value = trim(
+                cookie.substr(valueStart, valueEnd - valueStart));
 
             return safeEquals(value, token);
         }
@@ -571,7 +749,12 @@ void WebServer::handleClient(SOCKET clientSocket)
 
     if (!readRequest(clientSocket, request, errorStatus))
     {
-        sendResponse(clientSocket, errorStatus, "text/plain; charset=utf-8", statusText(errorStatus));
+        sendResponse(
+            clientSocket,
+            errorStatus,
+            "text/plain; charset=utf-8",
+            statusText(errorStatus));
+
         return;
     }
 
@@ -594,7 +777,12 @@ void WebServer::handleClient(SOCKET clientSocket)
 
         if (!hostAllowed)
         {
-            sendResponse(clientSocket, 403, "text/plain; charset=utf-8", "Invalid Host header.");
+            sendResponse(
+                clientSocket,
+                403,
+                "text/plain; charset=utf-8",
+                "Invalid Host header.");
+
             return;
         }
     }
@@ -607,18 +795,30 @@ void WebServer::handleClient(SOCKET clientSocket)
 
         if (origin != expected)
         {
-            sendResponse(clientSocket, 403, "text/plain; charset=utf-8", "Invalid Origin.");
+            sendResponse(
+                clientSocket,
+                403,
+                "text/plain; charset=utf-8",
+                "Invalid Origin.");
+
             return;
         }
     }
 
-    if (request.path == "/" && !queryParam(request.query, "token").empty())
+    if (request.path == "/" &&
+        !queryParam(request.query, "token").empty())
     {
-        std::string suppliedToken = queryParam(request.query, "token");
+        std::string suppliedToken =
+            queryParam(request.query, "token");
 
         if (!safeEquals(suppliedToken, token))
         {
-            sendResponse(clientSocket, 401, "text/plain; charset=utf-8", "Invalid token.");
+            sendResponse(
+                clientSocket,
+                401,
+                "text/plain; charset=utf-8",
+                "Invalid token.");
+
             return;
         }
 
@@ -627,13 +827,23 @@ void WebServer::handleClient(SOCKET clientSocket)
             "; HttpOnly; SameSite=Strict; Path=/\r\n"
             "Location: /\r\n";
 
-        sendResponse(clientSocket, 302, "text/plain; charset=utf-8", "Redirecting...", headers);
+        sendResponse(
+            clientSocket,
+            302,
+            "text/plain; charset=utf-8",
+            "Redirecting...",
+            headers);
+
         return;
     }
 
     if (!isAuthorized(request))
     {
-        sendJson(clientSocket, 401, "{\"error\":\"Unauthorized\"}");
+        sendJson(
+            clientSocket,
+            401,
+            "{\"error\":\"Unauthorized\"}");
+
         return;
     }
 
@@ -646,71 +856,111 @@ void WebServer::handleClient(SOCKET clientSocket)
     serveStatic(clientSocket, request);
 }
 
-void WebServer::handleApi(SOCKET clientSocket, const HttpRequest& request)
+void WebServer::handleApi(
+    SOCKET clientSocket,
+    const HttpRequest& request)
 {
     const std::string& path = request.path;
 
     if (path.rfind("/api/sshkeyguard/", 0) == 0)
     {
-        std::string action = path.substr(std::string("/api/sshkeyguard/").size());
-        handleSshKeyGuard(clientSocket, request.method, action);
+        std::string action =
+            path.substr(std::string("/api/sshkeyguard/").size());
+
+        handleSshKeyGuard(
+            clientSocket,
+            request.method,
+            action);
+
         return;
     }
 
     if (path.rfind("/api/ssh-key-guard/", 0) == 0)
     {
-        std::string action = path.substr(std::string("/api/ssh-key-guard/").size());
-        handleSshKeyGuard(clientSocket, request.method, action);
+        std::string action =
+            path.substr(std::string("/api/ssh-key-guard/").size());
+
+        handleSshKeyGuard(
+            clientSocket,
+            request.method,
+            action);
+
         return;
     }
 
     if (path.rfind("/api/security/", 0) == 0)
     {
-        std::string action = path.substr(std::string("/api/security/").size());
-        handleSecurity(clientSocket, request.method, action);
+        std::string action =
+            path.substr(std::string("/api/security/").size());
+
+        handleSecurity(
+            clientSocket,
+            request.method,
+            action);
+
         return;
     }
 
-    if (path == "/api/telegram" || path.rfind("/api/telegram/", 0) == 0)
+    if (path == "/api/telegram" ||
+        path.rfind("/api/telegram/", 0) == 0)
     {
         std::string action;
 
         if (path == "/api/telegram")
             action = "status";
         else
-            action = path.substr(std::string("/api/telegram/").size());
+            action = path.substr(
+                std::string("/api/telegram/").size());
 
-        handleTelegramBot(clientSocket, request.method, action, request.body);
+        handleTelegramBot(
+            clientSocket,
+            request.method,
+            action,
+            request.body);
+
         return;
     }
 
-    if (path == "/api/hardening" || path.rfind("/api/hardening/", 0) == 0)
+    if (path == "/api/hardening" ||
+        path.rfind("/api/hardening/", 0) == 0)
     {
         std::string action;
 
         if (path == "/api/hardening")
             action = "status";
         else
-            action = path.substr(std::string("/api/hardening/").size());
+            action = path.substr(
+                std::string("/api/hardening/").size());
 
-        handleHardening(clientSocket, request.method, action);
+        handleHardening(
+            clientSocket,
+            request.method,
+            action);
+
         return;
     }
 
-    if (path == "/api/fileguard" || path.rfind("/api/fileguard/", 0) == 0)
+    if (path == "/api/fileguard" ||
+        path.rfind("/api/fileguard/", 0) == 0)
     {
         std::string action;
 
         if (path == "/api/fileguard")
             action = "status";
         else
-            action = path.substr(std::string("/api/fileguard/").size());
+            action = path.substr(
+                std::string("/api/fileguard/").size());
 
-        handleFileGuard(clientSocket, request.method, action);
+        handleFileGuard(
+            clientSocket,
+            request.method,
+            action);
+
         return;
     }
 
-    if (request.method == "GET" && path == "/api/health")
+    if (request.method == "GET" &&
+        path == "/api/health")
     {
         bool sshKeys = sshKeyGuard.load() != nullptr;
         bool securityModule = security.load() != nullptr;
@@ -735,9 +985,12 @@ void WebServer::handleApi(SOCKET clientSocket, const HttpRequest& request)
         return;
     }
 
-    if (request.method == "GET" && path == "/api/server")
+    if (request.method == "GET" &&
+        path == "/api/server")
     {
-        sendJson(clientSocket, 200,
+        sendJson(
+            clientSocket,
+            200,
             "{"
             "\"connected\":true,"
             "\"name\":\"ServerGuard\","
@@ -748,13 +1001,15 @@ void WebServer::handleApi(SOCKET clientSocket, const HttpRequest& request)
         return;
     }
 
-    if (request.method == "GET" && path == "/api/server/stats")
+    if (request.method == "GET" &&
+        path == "/api/server/stats")
     {
         handleServerStats(clientSocket);
         return;
     }
 
-    if (request.method == "GET" && path == "/api/modules")
+    if (request.method == "GET" &&
+        path == "/api/modules")
     {
         bool sshKeys = sshKeyGuard.load() != nullptr;
         bool securityModule = security.load() != nullptr;
@@ -776,7 +1031,8 @@ void WebServer::handleApi(SOCKET clientSocket, const HttpRequest& request)
         return;
     }
 
-    if (request.method == "GET" && path == "/api/dashboard")
+    if (request.method == "GET" &&
+        path == "/api/dashboard")
     {
         bool sshKeys = sshKeyGuard.load() != nullptr;
         Security* securityModule = security.load();
@@ -785,8 +1041,13 @@ void WebServer::handleApi(SOCKET clientSocket, const HttpRequest& request)
 
         int servers = 0;
 
-        if (sshKeys || securityModule || hardeningModule || telegramModule)
+        if (sshKeys ||
+            securityModule ||
+            hardeningModule ||
+            telegramModule)
+        {
             servers = 1;
+        }
 
         int links = 0;
 
@@ -800,7 +1061,8 @@ void WebServer::handleApi(SOCKET clientSocket, const HttpRequest& request)
         if (securityModule)
             threats = securityModule->webThreats();
 
-        const char* status = servers > 0 ? "online" : "offline";
+        const char* status =
+            servers > 0 ? "online" : "offline";
 
         std::ostringstream json;
 
@@ -815,14 +1077,25 @@ void WebServer::handleApi(SOCKET clientSocket, const HttpRequest& request)
         return;
     }
 
-    sendJson(clientSocket, 404, "{\"error\":\"API endpoint not found\"}");
+    sendJson(
+        clientSocket,
+        404,
+        "{\"error\":\"API endpoint not found\"}");
 }
 
-void WebServer::serveStatic(SOCKET clientSocket, const HttpRequest& request)
+void WebServer::serveStatic(
+    SOCKET clientSocket,
+    const HttpRequest& request)
 {
-    if (request.method != "GET" && request.method != "HEAD")
+    if (request.method != "GET" &&
+        request.method != "HEAD")
     {
-        sendResponse(clientSocket, 405, "text/plain; charset=utf-8", "Method Not Allowed");
+        sendResponse(
+            clientSocket,
+            405,
+            "text/plain; charset=utf-8",
+            "Method Not Allowed");
+
         return;
     }
 
@@ -836,44 +1109,75 @@ void WebServer::serveStatic(SOCKET clientSocket, const HttpRequest& request)
         decoded.find(':') != std::string::npos ||
         decoded.find('\0') != std::string::npos)
     {
-        sendResponse(clientSocket, 403, "text/plain; charset=utf-8", "Forbidden");
+        sendResponse(
+            clientSocket,
+            403,
+            "text/plain; charset=utf-8",
+            "Forbidden");
+
         return;
     }
 
     try
     {
-        std::filesystem::path root = std::filesystem::weakly_canonical(std::filesystem::path(webRoot));
+        std::filesystem::path root =
+            std::filesystem::weakly_canonical(
+                std::filesystem::path(webRoot));
 
         std::string relative = decoded;
 
-        while (!relative.empty() && (relative.front() == '/' || relative.front() == '\\'))
+        while (!relative.empty() &&
+            (relative.front() == '/' ||
+                relative.front() == '\\'))
+        {
             relative.erase(relative.begin());
+        }
 
-        std::filesystem::path file = std::filesystem::weakly_canonical(root / relative);
+        std::filesystem::path file =
+            std::filesystem::weakly_canonical(root / relative);
 
         std::filesystem::path rootWithSlash = root;
-        rootWithSlash += std::filesystem::path::preferred_separator;
+        rootWithSlash +=
+            std::filesystem::path::preferred_separator;
 
         std::string rootString = rootWithSlash.string();
         std::string fileString = file.string();
 
-        if (fileString != root.string() && fileString.rfind(rootString, 0) != 0)
+        if (fileString != root.string() &&
+            fileString.rfind(rootString, 0) != 0)
         {
-            sendResponse(clientSocket, 403, "text/plain; charset=utf-8", "Forbidden");
+            sendResponse(
+                clientSocket,
+                403,
+                "text/plain; charset=utf-8",
+                "Forbidden");
+
             return;
         }
 
-        if (!std::filesystem::exists(file) || !std::filesystem::is_regular_file(file))
+        if (!std::filesystem::exists(file) ||
+            !std::filesystem::is_regular_file(file))
         {
-            sendResponse(clientSocket, 404, "text/plain; charset=utf-8", "Not Found");
+            sendResponse(
+                clientSocket,
+                404,
+                "text/plain; charset=utf-8",
+                "Not Found");
+
             return;
         }
 
-        uintmax_t fileSize = std::filesystem::file_size(file);
+        uintmax_t fileSize =
+            std::filesystem::file_size(file);
 
         if (fileSize > MAX_FILE_BYTES)
         {
-            sendResponse(clientSocket, 413, "text/plain; charset=utf-8", "File Too Large");
+            sendResponse(
+                clientSocket,
+                413,
+                "text/plain; charset=utf-8",
+                "File Too Large");
+
             return;
         }
 
@@ -881,7 +1185,12 @@ void WebServer::serveStatic(SOCKET clientSocket, const HttpRequest& request)
 
         if (!input)
         {
-            sendResponse(clientSocket, 500, "text/plain; charset=utf-8", "Failed to open file.");
+            sendResponse(
+                clientSocket,
+                500,
+                "text/plain; charset=utf-8",
+                "Failed to open file.");
+
             return;
         }
 
@@ -890,21 +1199,35 @@ void WebServer::serveStatic(SOCKET clientSocket, const HttpRequest& request)
 
         if (fileSize > 0)
         {
-            input.read(content.data(), static_cast<std::streamsize>(fileSize));
+            input.read(
+                &content[0],
+                static_cast<std::streamsize>(fileSize));
 
             if (!input)
             {
-                sendResponse(clientSocket, 500, "text/plain; charset=utf-8", "Failed to read file.");
+                sendResponse(
+                    clientSocket,
+                    500,
+                    "text/plain; charset=utf-8",
+                    "Failed to read file.");
+
                 return;
             }
         }
 
-        sendResponse(clientSocket, 200, getContentType(file.string()),
+        sendResponse(
+            clientSocket,
+            200,
+            getContentType(file.string()),
             request.method == "HEAD" ? "" : content);
     }
     catch (...)
     {
-        sendResponse(clientSocket, 500, "text/plain; charset=utf-8", "Internal Server Error");
+        sendResponse(
+            clientSocket,
+            500,
+            "text/plain; charset=utf-8",
+            "Internal Server Error");
     }
 }
 
@@ -917,9 +1240,16 @@ void WebServer::sendResponse(
 {
     std::ostringstream response;
 
-    response << "HTTP/1.1 " << status << " " << statusText(status) << "\r\n";
-    response << "Content-Type: " << contentType << "\r\n";
-    response << "Content-Length: " << body.size() << "\r\n";
+    response << "HTTP/1.1 "
+        << status << " "
+        << statusText(status) << "\r\n";
+
+    response << "Content-Type: "
+        << contentType << "\r\n";
+
+    response << "Content-Length: "
+        << body.size() << "\r\n";
+
     response << "Cache-Control: no-store\r\n";
     response << "X-Content-Type-Options: nosniff\r\n";
     response << "X-Frame-Options: DENY\r\n";
@@ -944,8 +1274,21 @@ void WebServer::sendResponse(
 
     while (sentTotal < data.size())
     {
-        int sent = send(clientSocket, data.data() + sentTotal,
-            static_cast<int>(data.size() - sentTotal), 0);
+#ifdef _WIN32
+        int sent = ::send(
+            clientSocket,
+            data.data() + sentTotal,
+            static_cast<int>(std::min(
+                data.size() - sentTotal,
+                static_cast<size_t>(INT_MAX))),
+            0);
+#else
+        ssize_t sent = ::send(
+            clientSocket,
+            data.data() + sentTotal,
+            data.size() - sentTotal,
+            MSG_NOSIGNAL);
+#endif
 
         if (sent <= 0)
             break;
@@ -954,16 +1297,25 @@ void WebServer::sendResponse(
     }
 }
 
-void WebServer::sendJson(SOCKET clientSocket, int status, const std::string& json)
+void WebServer::sendJson(
+    SOCKET clientSocket,
+    int status,
+    const std::string& json)
 {
-    sendResponse(clientSocket, status, "application/json; charset=utf-8", json);
+    sendResponse(
+        clientSocket,
+        status,
+        "application/json; charset=utf-8",
+        json);
 }
 
-std::string WebServer::getContentType(const std::string& path)
+std::string WebServer::getContentType(
+    const std::string& path)
 {
     std::string lower = toLower(path);
 
-    if (hasSuffix(lower, ".html") || hasSuffix(lower, ".htm"))
+    if (hasSuffix(lower, ".html") ||
+        hasSuffix(lower, ".htm"))
         return "text/html; charset=utf-8";
 
     if (hasSuffix(lower, ".css"))
@@ -981,7 +1333,8 @@ std::string WebServer::getContentType(const std::string& path)
     if (hasSuffix(lower, ".png"))
         return "image/png";
 
-    if (hasSuffix(lower, ".jpg") || hasSuffix(lower, ".jpeg"))
+    if (hasSuffix(lower, ".jpg") ||
+        hasSuffix(lower, ".jpeg"))
         return "image/jpeg";
 
     if (hasSuffix(lower, ".gif"))
@@ -1029,7 +1382,9 @@ std::string WebServer::urlDecode(const std::string& value)
 
             if (high >= 0 && low >= 0)
             {
-                result += static_cast<char>((high << 4) | low);
+                result += static_cast<char>(
+                    (high << 4) | low);
+
                 i += 2;
                 continue;
             }
@@ -1044,7 +1399,8 @@ std::string WebServer::urlDecode(const std::string& value)
     return result;
 }
 
-std::string WebServer::jsonEscape(const std::string& value)
+std::string WebServer::jsonEscape(
+    const std::string& value)
 {
     std::ostringstream output;
 
@@ -1052,19 +1408,49 @@ std::string WebServer::jsonEscape(const std::string& value)
     {
         switch (c)
         {
-        case '\"': output << "\\\""; break;
-        case '\\': output << "\\\\"; break;
-        case '\b': output << "\\b"; break;
-        case '\f': output << "\\f"; break;
-        case '\n': output << "\\n"; break;
-        case '\r': output << "\\r"; break;
-        case '\t': output << "\\t"; break;
+        case '"':
+            output << "\\\"";
+            break;
+
+        case '\\':
+            output << "\\\\";
+            break;
+
+        case '\b':
+            output << "\\b";
+            break;
+
+        case '\f':
+            output << "\\f";
+            break;
+
+        case '\n':
+            output << "\\n";
+            break;
+
+        case '\r':
+            output << "\\r";
+            break;
+
+        case '\t':
+            output << "\\t";
+            break;
+
         default:
             if (c < 0x20)
-                output << "\\u" << std::hex << std::setw(4) << std::setfill('0')
-                << static_cast<int>(c) << std::dec;
+            {
+                output << "\\u"
+                    << std::hex
+                    << std::setw(4)
+                    << std::setfill('0')
+                    << static_cast<int>(c)
+                    << std::dec;
+            }
             else
+            {
                 output << static_cast<char>(c);
+            }
+
             break;
         }
     }
@@ -1072,7 +1458,9 @@ std::string WebServer::jsonEscape(const std::string& value)
     return output.str();
 }
 
-bool WebServer::executeSshCommand(const std::string& command, std::string& output)
+bool WebServer::executeSshCommand(
+    const std::string& command,
+    std::string& output)
 {
     output.clear();
 
@@ -1081,12 +1469,15 @@ bool WebServer::executeSshCommand(const std::string& command, std::string& outpu
 
     std::lock_guard<std::mutex> lock(apiMutex);
 
-    LIBSSH2_CHANNEL* channel = libssh2_channel_open_session(session);
+    LIBSSH2_CHANNEL* channel =
+        libssh2_channel_open_session(session);
 
     if (!channel)
         return false;
 
-    if (libssh2_channel_exec(channel, command.c_str()) != 0)
+    if (libssh2_channel_exec(
+        channel,
+        command.c_str()) != 0)
     {
         libssh2_channel_free(channel);
         return false;
@@ -1096,12 +1487,17 @@ bool WebServer::executeSshCommand(const std::string& command, std::string& outpu
 
     while (true)
     {
-        int rc = libssh2_channel_read(channel, buffer, sizeof(buffer) - 1);
+        int rc = static_cast<int>(libssh2_channel_read(
+            channel,
+            buffer,
+            sizeof(buffer) - 1));
 
         if (rc > 0)
         {
-            buffer[rc] = '\0';
-            output.append(buffer, static_cast<size_t>(rc));
+            output.append(
+                buffer,
+                static_cast<size_t>(rc));
+
             continue;
         }
 
@@ -1116,7 +1512,8 @@ bool WebServer::executeSshCommand(const std::string& command, std::string& outpu
     libssh2_channel_wait_eof(channel);
     libssh2_channel_wait_closed(channel);
 
-    int exitCode = libssh2_channel_get_exit_status(channel);
+    int exitCode =
+        libssh2_channel_get_exit_status(channel);
 
     libssh2_channel_free(channel);
 
@@ -1130,11 +1527,15 @@ void WebServer::sendRemoteJsonFile(
 {
     std::string output;
 
-    bool ok = executeSshCommand("cat " + remotePath + " 2>/dev/null", output);
+    bool ok = executeSshCommand(
+        "cat " + remotePath + " 2>/dev/null",
+        output);
 
     std::string text = trim(output);
 
-    if (!ok || text.empty() || (text[0] != '[' && text[0] != '{'))
+    if (!ok ||
+        text.empty() ||
+        (text[0] != '[' && text[0] != '{'))
     {
         sendJson(clientSocket, 200, fallbackJson);
         return;
@@ -1150,7 +1551,11 @@ void WebServer::handleFileGuard(
 {
     if (!session)
     {
-        sendJson(clientSocket, 503, "{\"error\":\"SSH session is not available\"}");
+        sendJson(
+            clientSocket,
+            503,
+            "{\"error\":\"SSH session is not available\"}");
+
         return;
     }
 
@@ -1161,16 +1566,24 @@ void WebServer::handleFileGuard(
     {
         if (!isGet)
         {
-            sendJson(clientSocket, 405, "{\"error\":\"Method Not Allowed\"}");
+            sendJson(
+                clientSocket,
+                405,
+                "{\"error\":\"Method Not Allowed\"}");
+
             return;
         }
 
         std::string command =
-            "echo \"$(systemctl is-active " + FILEGUARD_SERVICE + " 2>/dev/null)\"; "
-            "echo \"$(systemctl is-enabled " + FILEGUARD_SERVICE + " 2>/dev/null)\"; "
-            "echo \"$(systemctl list-unit-files " + FILEGUARD_SERVICE +
+            "echo \"$(systemctl is-active " +
+            FILEGUARD_SERVICE + " 2>/dev/null)\"; "
+            "echo \"$(systemctl is-enabled " +
+            FILEGUARD_SERVICE + " 2>/dev/null)\"; "
+            "echo \"$(systemctl list-unit-files " +
+            FILEGUARD_SERVICE +
             ".service --no-legend 2>/dev/null | wc -l)\"; "
-            "if [ -f " + FILEGUARD_BASELINE + " ]; then echo 1; else echo 0; fi; "
+            "if [ -f " + FILEGUARD_BASELINE +
+            " ]; then echo 1; else echo 0; fi; "
             "true";
 
         std::string output;
@@ -1195,18 +1608,26 @@ void WebServer::handleFileGuard(
         baselineFlag = trim(baselineFlag);
 
         bool active = state == "active";
-        bool isInstalled = !installed.empty() && installed != "0";
+        bool isInstalled =
+            !installed.empty() && installed != "0";
 
         std::ostringstream json;
 
         json << "{"
             << "\"available\":true"
-            << ",\"service\":\"" << jsonEscape(FILEGUARD_SERVICE) << "\""
-            << ",\"state\":\"" << jsonEscape(state.empty() ? "unknown" : state) << "\""
-            << ",\"active\":" << (active ? "true" : "false")
-            << ",\"enabled\":" << (enabled == "enabled" ? "true" : "false")
-            << ",\"installed\":" << (isInstalled ? "true" : "false")
-            << ",\"baseline\":" << (baselineFlag == "1" ? "true" : "false")
+            << ",\"service\":\""
+            << jsonEscape(FILEGUARD_SERVICE) << "\""
+            << ",\"state\":\""
+            << jsonEscape(state.empty() ? "unknown" : state)
+            << "\""
+            << ",\"active\":"
+            << (active ? "true" : "false")
+            << ",\"enabled\":"
+            << (enabled == "enabled" ? "true" : "false")
+            << ",\"installed\":"
+            << (isInstalled ? "true" : "false")
+            << ",\"baseline\":"
+            << (baselineFlag == "1" ? "true" : "false")
             << "}";
 
         sendJson(clientSocket, 200, json.str());
@@ -1217,11 +1638,19 @@ void WebServer::handleFileGuard(
     {
         if (!isGet)
         {
-            sendJson(clientSocket, 405, "{\"error\":\"Method Not Allowed\"}");
+            sendJson(
+                clientSocket,
+                405,
+                "{\"error\":\"Method Not Allowed\"}");
+
             return;
         }
 
-        sendRemoteJsonFile(clientSocket, FILEGUARD_EVENTS, "[]");
+        sendRemoteJsonFile(
+            clientSocket,
+            FILEGUARD_EVENTS,
+            "[]");
+
         return;
     }
 
@@ -1229,11 +1658,19 @@ void WebServer::handleFileGuard(
     {
         if (!isGet)
         {
-            sendJson(clientSocket, 405, "{\"error\":\"Method Not Allowed\"}");
+            sendJson(
+                clientSocket,
+                405,
+                "{\"error\":\"Method Not Allowed\"}");
+
             return;
         }
 
-        sendRemoteJsonFile(clientSocket, FILEGUARD_BASELINE, "{}");
+        sendRemoteJsonFile(
+            clientSocket,
+            FILEGUARD_BASELINE,
+            "{}");
+
         return;
     }
 
@@ -1241,11 +1678,19 @@ void WebServer::handleFileGuard(
     {
         if (!isGet)
         {
-            sendJson(clientSocket, 405, "{\"error\":\"Method Not Allowed\"}");
+            sendJson(
+                clientSocket,
+                405,
+                "{\"error\":\"Method Not Allowed\"}");
+
             return;
         }
 
-        sendRemoteJsonFile(clientSocket, FILEGUARD_STATE, "{}");
+        sendRemoteJsonFile(
+            clientSocket,
+            FILEGUARD_STATE,
+            "{}");
+
         return;
     }
 
@@ -1253,15 +1698,26 @@ void WebServer::handleFileGuard(
     {
         if (!isGet)
         {
-            sendJson(clientSocket, 405, "{\"error\":\"Method Not Allowed\"}");
+            sendJson(
+                clientSocket,
+                405,
+                "{\"error\":\"Method Not Allowed\"}");
+
             return;
         }
 
         std::string output;
 
-        executeSshCommand("journalctl -u " + FILEGUARD_SERVICE + " -n 200 --no-pager 2>&1", output);
+        executeSshCommand(
+            "journalctl -u " + FILEGUARD_SERVICE +
+            " -n 200 --no-pager 2>&1",
+            output);
 
-        sendJson(clientSocket, 200, "{\"logs\":\"" + jsonEscape(output) + "\"}");
+        sendJson(
+            clientSocket,
+            200,
+            "{\"logs\":\"" + jsonEscape(output) + "\"}");
+
         return;
     }
 
@@ -1269,44 +1725,65 @@ void WebServer::handleFileGuard(
 
     if (action == "start")
     {
-        command = "systemctl start " + FILEGUARD_SERVICE + " 2>&1";
+        command =
+            "systemctl start " +
+            FILEGUARD_SERVICE + " 2>&1";
     }
     else if (action == "stop")
     {
-        command = "systemctl stop " + FILEGUARD_SERVICE + " 2>&1";
+        command =
+            "systemctl stop " +
+            FILEGUARD_SERVICE + " 2>&1";
     }
     else if (action == "restart")
     {
-        command = "systemctl restart " + FILEGUARD_SERVICE + " 2>&1";
+        command =
+            "systemctl restart " +
+            FILEGUARD_SERVICE + " 2>&1";
     }
     else if (action == "enable")
     {
-        command = "systemctl enable " + FILEGUARD_SERVICE + " 2>&1";
+        command =
+            "systemctl enable " +
+            FILEGUARD_SERVICE + " 2>&1";
     }
     else if (action == "disable")
     {
-        command = "systemctl disable " + FILEGUARD_SERVICE + " 2>&1";
+        command =
+            "systemctl disable " +
+            FILEGUARD_SERVICE + " 2>&1";
     }
     else if (action == "clear-events")
     {
-        command = "printf '[]\\n' > " + FILEGUARD_EVENTS + " && chmod 600 " + FILEGUARD_EVENTS + " 2>&1";
+        command =
+            "printf '[]\\n' > " + FILEGUARD_EVENTS +
+            " && chmod 600 " + FILEGUARD_EVENTS + " 2>&1";
     }
     else if (action == "rebuild-baseline")
     {
         command =
             "systemctl stop " + FILEGUARD_SERVICE + " 2>&1; "
-            "rm -f " + FILEGUARD_BASELINE + " " + FILEGUARD_STATE + " 2>&1; "
+            "rm -f " + FILEGUARD_BASELINE + " " +
+            FILEGUARD_STATE + " 2>&1; "
             "systemctl start " + FILEGUARD_SERVICE + " 2>&1";
     }
     else
     {
-        sendJson(clientSocket, 404, "{\"error\":\"FileGuard endpoint not found\"}");
+        sendJson(
+            clientSocket,
+            404,
+            "{\"error\":\"FileGuard endpoint not found\"}");
+
         return;
     }
 
     if (!isPost)
     {
-        sendJson(clientSocket, 405, "{\"error\":\"Use POST for this action\"}");
+        sendJson(
+            clientSocket,
+            405,
+            "{\"error\":\"Use POST for this action\"}");
+
         return;
     }
 

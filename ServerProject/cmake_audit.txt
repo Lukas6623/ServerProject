@@ -1,0 +1,54 @@
+﻿=== PROJECT ROOT ===
+D:\ServerProject\ServerProject
+
+=== GIT STATUS ===
+## dev...origin/dev
+ M SSHHardening.cpp
+ M main.cpp
+
+
+=== PROJECT AND BUILD FILES ===
+known_hosts.txt
+ServerProject.vcxproj
+
+=== SOURCE FILES ===
+autostart_disable\TelegramBot_DisableAutostart.cpp
+autostart_enable\TelegramBot_EnableAutostart.cpp
+generate_code\TelegramBot_GenerateCode.cpp
+handlers\WebServerHelpers.h
+handlers\WebServer_Hardening.cpp
+handlers\WebServer_Security.cpp
+handlers\WebServer_ServerStats.cpp
+handlers\WebServer_SshKeyGuard.cpp
+handlers\WebServer_Stop.cpp
+handlers\WebServer_TelegramBot.cpp
+install\TelegramBot_Install.cpp
+remove\TelegramBot_Remove.cpp
+restart\TelegramBot_Restart.cpp
+Security\install.cpp
+Security\update.cpp
+stop\TelegramBot_Stop.cpp
+update\TelegramBot_Update.cpp
+config.h
+FileGuard.cpp
+FileGuard.h
+Firewall.h
+Help.cpp
+Help.h
+main.cpp
+Nano.h
+Security.cpp
+Security.h
+SSHHardening.cpp
+SSHHardening.h
+SSHKeyGuard.cpp
+SSHKeyGuard.h
+TelegramBot.cpp
+TelegramBot.h
+TelegramBotInternal.h
+Web.cpp
+Web.h
+WebServer.cpp
+WebServer.h
+
+=== THIRD-PARTY LIBRARY FILES ===
