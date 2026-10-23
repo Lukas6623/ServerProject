@@ -1,7 +1,7 @@
 ﻿
 cmake_minimum_required(VERSION 3.21)
 
-project(ServerGuard VERSION 1.1.12 LANGUAGES CXX)
+project(ServerGuard VERSION 1.1.13 LANGUAGES CXX)
 
 # ============================================================
 # General settings

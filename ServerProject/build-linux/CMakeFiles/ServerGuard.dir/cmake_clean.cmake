@@ -1,4 +1,6 @@
 file(REMOVE_RECURSE
+  "/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard"
+  "/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard.pdb"
   "CMakeFiles/ServerGuard.dir/FileGuard.cpp.o"
   "CMakeFiles/ServerGuard.dir/FileGuard.cpp.o.d"
   "CMakeFiles/ServerGuard.dir/Help.cpp.o"
@@ -45,8 +47,6 @@ file(REMOVE_RECURSE
   "CMakeFiles/ServerGuard.dir/stop/TelegramBot_Stop.cpp.o.d"
   "CMakeFiles/ServerGuard.dir/update/TelegramBot_Update.cpp.o"
   "CMakeFiles/ServerGuard.dir/update/TelegramBot_Update.cpp.o.d"
-  "ServerGuard"
-  "ServerGuard.pdb"
 )
 
 # Per-language clean rules from dependency scanning.

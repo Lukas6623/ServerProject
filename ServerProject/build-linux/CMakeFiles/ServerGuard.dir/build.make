@@ -420,38 +420,40 @@ ServerGuard_OBJECTS = \
 # External object files for target ServerGuard
 ServerGuard_EXTERNAL_OBJECTS =
 
-ServerGuard: CMakeFiles/ServerGuard.dir/FileGuard.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/Help.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/SSHHardening.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/SSHKeyGuard.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/Security.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/TelegramBot.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/Web.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/WebServer.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/autostart_disable/TelegramBot_DisableAutostart.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/autostart_enable/TelegramBot_EnableAutostart.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/generate_code/TelegramBot_GenerateCode.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_Hardening.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_Security.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_ServerStats.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_SshKeyGuard.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_Stop.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_TelegramBot.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/install/TelegramBot_Install.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/main.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/remove/TelegramBot_Remove.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/restart/TelegramBot_Restart.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/stop/TelegramBot_Stop.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/update/TelegramBot_Update.cpp.o
-ServerGuard: CMakeFiles/ServerGuard.dir/build.make
-ServerGuard: /usr/lib/x86_64-linux-gnu/libcrypto.so
-ServerGuard: /usr/lib/x86_64-linux-gnu/libssh2.so
-ServerGuard: CMakeFiles/ServerGuard.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Linking CXX executable ServerGuard"
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/FileGuard.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/Help.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/SSHHardening.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/SSHKeyGuard.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/Security.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/TelegramBot.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/Web.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/WebServer.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/autostart_disable/TelegramBot_DisableAutostart.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/autostart_enable/TelegramBot_EnableAutostart.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/generate_code/TelegramBot_GenerateCode.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_Hardening.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_Security.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_ServerStats.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_SshKeyGuard.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_Stop.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/handlers/WebServer_TelegramBot.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/install/TelegramBot_Install.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/main.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/remove/TelegramBot_Remove.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/restart/TelegramBot_Restart.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/stop/TelegramBot_Stop.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/update/TelegramBot_Update.cpp.o
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/build.make
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: /usr/lib/x86_64-linux-gnu/libssh2.so
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: /usr/lib/x86_64-linux-gnu/libcrypto.so
+/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard: CMakeFiles/ServerGuard.dir/link.txt
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/mnt/d/ServerProject/ServerProject/build-linux/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Linking CXX executable /mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/ServerGuard.dir/link.txt --verbose=$(VERBOSE)
+	/usr/bin/cmake -E make_directory /mnt/d/ServerProject/ServerProject/dist/linux-x64
+	/usr/bin/cmake -E copy_if_different /mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard /mnt/d/ServerProject/ServerProject/dist/linux-x64/
 
 # Rule to build all files generated by this target.
-CMakeFiles/ServerGuard.dir/build: ServerGuard
+CMakeFiles/ServerGuard.dir/build: /mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard
 .PHONY : CMakeFiles/ServerGuard.dir/build
 
 CMakeFiles/ServerGuard.dir/clean:

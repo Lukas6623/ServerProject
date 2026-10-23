@@ -1,0 +1,3 @@
+D:/ServerProject/ServerProject/build/windows/CMakeFiles/ServerGuard.dir
+D:/ServerProject/ServerProject/build/windows/CMakeFiles/ALL_BUILD.dir
+D:/ServerProject/ServerProject/build/windows/CMakeFiles/ZERO_CHECK.dir

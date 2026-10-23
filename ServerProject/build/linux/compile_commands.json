@@ -1,0 +1,140 @@
+[
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/FileGuard.cpp.o -c /mnt/d/ServerProject/ServerProject/FileGuard.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/FileGuard.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/FileGuard.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/Help.cpp.o -c /mnt/d/ServerProject/ServerProject/Help.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/Help.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/Help.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/SSHHardening.cpp.o -c /mnt/d/ServerProject/ServerProject/SSHHardening.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/SSHHardening.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/SSHHardening.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/SSHKeyGuard.cpp.o -c /mnt/d/ServerProject/ServerProject/SSHKeyGuard.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/SSHKeyGuard.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/SSHKeyGuard.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/Security.cpp.o -c /mnt/d/ServerProject/ServerProject/Security.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/Security.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/Security.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/TelegramBot.cpp.o -c /mnt/d/ServerProject/ServerProject/TelegramBot.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/TelegramBot.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/TelegramBot.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/Web.cpp.o -c /mnt/d/ServerProject/ServerProject/Web.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/Web.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/Web.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/WebServer.cpp.o -c /mnt/d/ServerProject/ServerProject/WebServer.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/WebServer.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/WebServer.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/autostart_disable/TelegramBot_DisableAutostart.cpp.o -c /mnt/d/ServerProject/ServerProject/autostart_disable/TelegramBot_DisableAutostart.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/autostart_disable/TelegramBot_DisableAutostart.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/autostart_disable/TelegramBot_DisableAutostart.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/autostart_enable/TelegramBot_EnableAutostart.cpp.o -c /mnt/d/ServerProject/ServerProject/autostart_enable/TelegramBot_EnableAutostart.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/autostart_enable/TelegramBot_EnableAutostart.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/autostart_enable/TelegramBot_EnableAutostart.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/generate_code/TelegramBot_GenerateCode.cpp.o -c /mnt/d/ServerProject/ServerProject/generate_code/TelegramBot_GenerateCode.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/generate_code/TelegramBot_GenerateCode.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/generate_code/TelegramBot_GenerateCode.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/handlers/WebServer_Hardening.cpp.o -c /mnt/d/ServerProject/ServerProject/handlers/WebServer_Hardening.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/handlers/WebServer_Hardening.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/handlers/WebServer_Hardening.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/handlers/WebServer_Security.cpp.o -c /mnt/d/ServerProject/ServerProject/handlers/WebServer_Security.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/handlers/WebServer_Security.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/handlers/WebServer_Security.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/handlers/WebServer_ServerStats.cpp.o -c /mnt/d/ServerProject/ServerProject/handlers/WebServer_ServerStats.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/handlers/WebServer_ServerStats.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/handlers/WebServer_ServerStats.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/handlers/WebServer_SshKeyGuard.cpp.o -c /mnt/d/ServerProject/ServerProject/handlers/WebServer_SshKeyGuard.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/handlers/WebServer_SshKeyGuard.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/handlers/WebServer_SshKeyGuard.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/handlers/WebServer_Stop.cpp.o -c /mnt/d/ServerProject/ServerProject/handlers/WebServer_Stop.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/handlers/WebServer_Stop.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/handlers/WebServer_Stop.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/handlers/WebServer_TelegramBot.cpp.o -c /mnt/d/ServerProject/ServerProject/handlers/WebServer_TelegramBot.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/handlers/WebServer_TelegramBot.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/handlers/WebServer_TelegramBot.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/install/TelegramBot_Install.cpp.o -c /mnt/d/ServerProject/ServerProject/install/TelegramBot_Install.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/install/TelegramBot_Install.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/install/TelegramBot_Install.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/main.cpp.o -c /mnt/d/ServerProject/ServerProject/main.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/main.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/main.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/remove/TelegramBot_Remove.cpp.o -c /mnt/d/ServerProject/ServerProject/remove/TelegramBot_Remove.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/remove/TelegramBot_Remove.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/remove/TelegramBot_Remove.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/restart/TelegramBot_Restart.cpp.o -c /mnt/d/ServerProject/ServerProject/restart/TelegramBot_Restart.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/restart/TelegramBot_Restart.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/restart/TelegramBot_Restart.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/stop/TelegramBot_Stop.cpp.o -c /mnt/d/ServerProject/ServerProject/stop/TelegramBot_Stop.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/stop/TelegramBot_Stop.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/stop/TelegramBot_Stop.cpp.o"
+},
+{
+  "directory": "/mnt/d/ServerProject/ServerProject/build/linux",
+  "command": "/usr/bin/c++  -I/mnt/d/ServerProject/ServerProject -O3 -DNDEBUG -std=c++20 -o CMakeFiles/ServerGuard.dir/update/TelegramBot_Update.cpp.o -c /mnt/d/ServerProject/ServerProject/update/TelegramBot_Update.cpp",
+  "file": "/mnt/d/ServerProject/ServerProject/update/TelegramBot_Update.cpp",
+  "output": "CMakeFiles/ServerGuard.dir/update/TelegramBot_Update.cpp.o"
+}
+]

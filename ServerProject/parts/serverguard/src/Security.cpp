@@ -22,7 +22,10 @@
 #include "config.h"
 
 static const char* MODULE_NAME = "ServerGuard Security";
-static const char* MODULE_VERSION = "1.0.0";
+
+// Module version is read from the signed manifest (field "module_version").
+// Until the manifest is fetched and verified, "unknown" is shown.
+static std::string moduleVersion = "unknown";
 
 struct ModuleCommand
 {
@@ -436,6 +439,62 @@ static bool getExpectedScriptHash(const std::string& manifest, std::string& expe
     expectedHash = toLower(match[1].str());
 
     return true;
+}
+
+// Reads the "module_version" string field from an already verified manifest.
+static bool getManifestModuleVersion(const std::string& manifest, std::string& version)
+{
+    version.clear();
+
+    std::smatch match;
+
+    const std::regex pattern(
+        R"REGEX("module_version"\s*:\s*"([0-9A-Za-z][0-9A-Za-z.+\-]{0,31})")REGEX");
+
+    if (!std::regex_search(manifest, match, pattern))
+    {
+        return false;
+    }
+
+    version = match[1].str();
+
+    return true;
+}
+
+// Downloads manifest + signature, verifies Ed25519 and stores module_version.
+// Silent on failure: the version simply stays "unknown".
+static void refreshModuleVersion()
+{
+    std::string manifestPath = plat::makeTempFile("sgm");
+    std::string signaturePath = plat::makeTempFile("sgs");
+
+    const auto cleanup = [&]()
+        {
+            if (!manifestPath.empty()) plat::removeFile(manifestPath);
+            if (!signaturePath.empty()) plat::removeFile(signaturePath);
+        };
+
+    if (manifestPath.empty() || signaturePath.empty())
+    {
+        cleanup();
+        return;
+    }
+
+    std::string manifest;
+    std::string signature;
+    std::string version;
+
+    if (plat::downloadFile(SECURITY_MANIFEST_URL, manifestPath, SECURITY_MAX_MANIFEST_SIZE) &&
+        plat::downloadFile(SECURITY_SIGNATURE_URL, signaturePath, SECURITY_MAX_SIGNATURE_SIZE) &&
+        readBinaryFile(manifestPath, manifest, SECURITY_MAX_MANIFEST_SIZE) &&
+        readBinaryFile(signaturePath, signature, SECURITY_MAX_SIGNATURE_SIZE) &&
+        verifyEd25519(manifest, signature) &&
+        getManifestModuleVersion(manifest, version))
+    {
+        moduleVersion = version;
+    }
+
+    cleanup();
 }
 
 static std::string sha256Hex(const std::string& data)
@@ -2067,6 +2126,16 @@ bool Security::downloadScriptToTemp()
         return false;
     }
 
+    {
+        std::string version;
+
+        if (getManifestModuleVersion(manifest, version))
+        {
+            moduleVersion = version;
+            std::cout << "Module version (from signed manifest): " << moduleVersion << "\n";
+        }
+    }
+
     const std::string actualHash = sha256Hex(script);
 
     if (actualHash.empty() || actualHash != expectedHash)
@@ -2589,6 +2658,7 @@ bool Security::updateSecurity()
 
     std::cout << "\n========================================\n SECURITY UPDATE SUCCESSFUL\n========================================\n";
 
+    std::cout << "Version:\n" << moduleVersion << "\n\n";
     std::cout << "Source:\n" << SECURITY_UPDATE_URL << "\n\n";
     std::cout << "Script:\n" << SECURITY_SCRIPT << "\n\n";
     std::cout << "Backup:\n" << SECURITY_BACKUP_SCRIPT << "\n\n";
@@ -2735,10 +2805,12 @@ bool Security::uninstallSecurity()
 
 void Security::menu()
 {
+    refreshModuleVersion();
+
     while (true)
     {
         std::cout << "\n========================================\n "
-            << MODULE_NAME << " v" << MODULE_VERSION
+            << MODULE_NAME << " v" << moduleVersion
             << "\n========================================\n\n";
 
         for (const ModuleCommand& item : MODULE_COMMANDS)

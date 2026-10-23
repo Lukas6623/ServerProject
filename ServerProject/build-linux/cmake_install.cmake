@@ -49,7 +49,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
          FILE "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/ServerGuard"
          RPATH "")
   endif()
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin" TYPE EXECUTABLE FILES "/mnt/d/ServerProject/ServerProject/build-linux/ServerGuard")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/bin" TYPE EXECUTABLE FILES "/mnt/d/ServerProject/ServerProject/dist/linux-x64/ServerGuard")
   if(EXISTS "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/ServerGuard" AND
      NOT IS_SYMLINK "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}/bin/ServerGuard")
     if(CMAKE_INSTALL_DO_STRIP)
@@ -59,7 +59,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
 endif()
 
 if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT)
-  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/serverguard" TYPE PROGRAM RENAME "update-serverguard.sh" FILES "/mnt/d/ServerProject/ServerProject/packaging/linux/update-serverguard.sh")
+  file(INSTALL DESTINATION "${CMAKE_INSTALL_PREFIX}/share/serverguard" TYPE PROGRAM FILES "/mnt/d/ServerProject/ServerProject/packaging/linux/update-serverguard.sh")
 endif()
 
 if(CMAKE_INSTALL_COMPONENT)

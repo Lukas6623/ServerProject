@@ -59,25 +59,25 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
     <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
-    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\ServerProject\ServerProject\build-windows\Debug\</OutDir>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\ServerProject\ServerProject\dist\.windows-staging\1.1.14\Debug\</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ServerGuard.dir\Debug\</IntDir>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">ServerGuard</TargetName>
     <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.exe</TargetExt>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
-    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\ServerProject\ServerProject\build-windows\Release\</OutDir>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\ServerProject\ServerProject\dist\.windows-staging\1.1.14\Release\</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ServerGuard.dir\Release\</IntDir>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">ServerGuard</TargetName>
     <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.exe</TargetExt>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
-    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\ServerProject\ServerProject\build-windows\MinSizeRel\</OutDir>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\ServerProject\ServerProject\dist\.windows-staging\1.1.14\MinSizeRel\</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">ServerGuard.dir\MinSizeRel\</IntDir>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">ServerGuard</TargetName>
     <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.exe</TargetExt>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</GenerateManifest>
-    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\ServerProject\ServerProject\build-windows\RelWithDebInfo\</OutDir>
+    <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\ServerProject\ServerProject\dist\.windows-staging\1.1.14\RelWithDebInfo\</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">ServerGuard.dir\RelWithDebInfo\</IntDir>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">ServerGuard</TargetName>
     <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.exe</TargetExt>
@@ -128,7 +128,7 @@
       <Command>setlocal
 "C:\Program Files\CMake\bin\cmake.exe" -E make_directory D:/ServerProject/ServerProject/dist/windows-x64
 if %errorlevel% neq 0 goto :cmEnd
-"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/ServerProject/ServerProject/build-windows/Debug/ServerGuard.exe D:/ServerProject/ServerProject/dist/windows-x64/
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/ServerProject/ServerProject/dist/.windows-staging/1.1.14/Debug/ServerGuard.exe D:/ServerProject/ServerProject/dist/windows-x64/
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -192,7 +192,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
       <ImportLibrary>D:/ServerProject/ServerProject/build-windows/Debug/ServerGuard.lib</ImportLibrary>
       <LinkErrorReporting></LinkErrorReporting>
-      <ProgramDataBaseFile>D:/ServerProject/ServerProject/build-windows/Debug/ServerGuard.pdb</ProgramDataBaseFile>
+      <ProgramDataBaseFile>D:/ServerProject/ServerProject/dist/.windows-staging/1.1.14/Debug/ServerGuard.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress></RandomizedBaseAddress>
       <SubSystem>Console</SubSystem>
     </Link>
@@ -245,7 +245,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <Command>setlocal
 "C:\Program Files\CMake\bin\cmake.exe" -E make_directory D:/ServerProject/ServerProject/dist/windows-x64
 if %errorlevel% neq 0 goto :cmEnd
-"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/ServerProject/ServerProject/build-windows/Release/ServerGuard.exe D:/ServerProject/ServerProject/dist/windows-x64/
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/ServerProject/ServerProject/dist/.windows-staging/1.1.14/Release/ServerGuard.exe D:/ServerProject/ServerProject/dist/windows-x64/
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -309,7 +309,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
       <ImportLibrary>D:/ServerProject/ServerProject/build-windows/Release/ServerGuard.lib</ImportLibrary>
       <LinkErrorReporting></LinkErrorReporting>
-      <ProgramDataBaseFile>D:/ServerProject/ServerProject/build-windows/Release/ServerGuard.pdb</ProgramDataBaseFile>
+      <ProgramDataBaseFile>D:/ServerProject/ServerProject/dist/.windows-staging/1.1.14/Release/ServerGuard.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress></RandomizedBaseAddress>
       <SubSystem>Console</SubSystem>
     </Link>
@@ -362,7 +362,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <Command>setlocal
 "C:\Program Files\CMake\bin\cmake.exe" -E make_directory D:/ServerProject/ServerProject/dist/windows-x64
 if %errorlevel% neq 0 goto :cmEnd
-"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/ServerProject/ServerProject/build-windows/MinSizeRel/ServerGuard.exe D:/ServerProject/ServerProject/dist/windows-x64/
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/ServerProject/ServerProject/dist/.windows-staging/1.1.14/MinSizeRel/ServerGuard.exe D:/ServerProject/ServerProject/dist/windows-x64/
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -426,7 +426,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
       <ImportLibrary>D:/ServerProject/ServerProject/build-windows/MinSizeRel/ServerGuard.lib</ImportLibrary>
       <LinkErrorReporting></LinkErrorReporting>
-      <ProgramDataBaseFile>D:/ServerProject/ServerProject/build-windows/MinSizeRel/ServerGuard.pdb</ProgramDataBaseFile>
+      <ProgramDataBaseFile>D:/ServerProject/ServerProject/dist/.windows-staging/1.1.14/MinSizeRel/ServerGuard.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress></RandomizedBaseAddress>
       <SubSystem>Console</SubSystem>
     </Link>
@@ -478,7 +478,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <Command>setlocal
 "C:\Program Files\CMake\bin\cmake.exe" -E make_directory D:/ServerProject/ServerProject/dist/windows-x64
 if %errorlevel% neq 0 goto :cmEnd
-"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/ServerProject/ServerProject/build-windows/RelWithDebInfo/ServerGuard.exe D:/ServerProject/ServerProject/dist/windows-x64/
+"C:\Program Files\CMake\bin\cmake.exe" -E copy_if_different D:/ServerProject/ServerProject/dist/.windows-staging/1.1.14/RelWithDebInfo/ServerGuard.exe D:/ServerProject/ServerProject/dist/windows-x64/
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -542,7 +542,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <ImageHasSafeExceptionHandlers></ImageHasSafeExceptionHandlers>
       <ImportLibrary>D:/ServerProject/ServerProject/build-windows/RelWithDebInfo/ServerGuard.lib</ImportLibrary>
       <LinkErrorReporting></LinkErrorReporting>
-      <ProgramDataBaseFile>D:/ServerProject/ServerProject/build-windows/RelWithDebInfo/ServerGuard.pdb</ProgramDataBaseFile>
+      <ProgramDataBaseFile>D:/ServerProject/ServerProject/dist/.windows-staging/1.1.14/RelWithDebInfo/ServerGuard.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress></RandomizedBaseAddress>
       <SubSystem>Console</SubSystem>
     </Link>

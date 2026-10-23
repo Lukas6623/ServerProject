@@ -30,9 +30,9 @@
 #include "Firewall.h"
 #include "Updater.h"
 
-// Can be overridden by the build system: -DSERVERGUARD_VERSION=\"1.1.8\"
+
 #ifndef SERVERGUARD_VERSION
-#define SERVERGUARD_VERSION "1.1.12"
+#define SERVERGUARD_VERSION "1.1.13" 
 #endif
 
 
